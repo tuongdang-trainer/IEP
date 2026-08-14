@@ -31,24 +31,35 @@ export async function POST(request: Request) {
       );
     }
 
-    // Save registration directly to candidates.
+    // Save candidate registration.
+    // If the email already exists, update the existing candidate.
     // Campaign and test information will be handled later.
-    const { data: candidate, error: insertError } =
+    const { data: candidate, error: upsertError } =
       await supabaseAdmin
         .from("candidates")
-        .insert({
-          email,
-          full_name: fullName,
-          team: team || null,
-        })
+        .upsert(
+          {
+            email,
+            full_name: fullName,
+            team: team || null,
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: "email",
+          }
+        )
         .select("id, email, full_name, team")
         .single();
 
-    if (insertError) {
-      console.error("Candidate insert error:", insertError);
+    if (upsertError) {
+      console.error("Candidate upsert error:", upsertError);
 
       return NextResponse.json(
-        { error: "Unable to save registration information." },
+        {
+          error: "Unable to save registration information.",
+          details: upsertError.message,
+          code: upsertError.code,
+        },
         { status: 500 }
       );
     }
