@@ -9,7 +9,7 @@ export async function POST(request: Request) {
     const email = String(body.email ?? "").trim().toLowerCase();
     const team = String(body.team ?? "").trim();
 
-    // Validate required fields
+    // Required fields
     if (!fullName) {
       return NextResponse.json(
         { error: "Full name is required." },
@@ -31,75 +31,26 @@ export async function POST(request: Request) {
       );
     }
 
-    // Check whether candidate already exists
-    const { data: existingCandidate, error: candidateLookupError } =
+    // Save registration directly to candidates.
+    // Campaign and test information will be handled later.
+    const { data: candidate, error: insertError } =
       await supabaseAdmin
         .from("candidates")
+        .insert({
+          email,
+          full_name: fullName,
+          team: team || null,
+        })
         .select("id, email, full_name, team")
-        .eq("email", email)
-        .maybeSingle();
+        .single();
 
-    if (candidateLookupError) {
-      console.error(
-        "Candidate lookup error:",
-        candidateLookupError
-      );
+    if (insertError) {
+      console.error("Candidate insert error:", insertError);
 
       return NextResponse.json(
-        { error: "Unable to check candidate information." },
+        { error: "Unable to save registration information." },
         { status: 500 }
       );
-    }
-
-    let candidate;
-
-    if (existingCandidate) {
-      // Update information if the candidate registers again
-      const { data: updatedCandidate, error: updateError } =
-        await supabaseAdmin
-          .from("candidates")
-          .update({
-            full_name: fullName,
-            team: team || null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", existingCandidate.id)
-          .select("id, email, full_name, team")
-          .single();
-
-      if (updateError) {
-        console.error("Candidate update error:", updateError);
-
-        return NextResponse.json(
-          { error: "Unable to update candidate information." },
-          { status: 500 }
-        );
-      }
-
-      candidate = updatedCandidate;
-    } else {
-      // Create new candidate
-      const { data: newCandidate, error: insertError } =
-        await supabaseAdmin
-          .from("candidates")
-          .insert({
-            email,
-            full_name: fullName,
-            team: team || null,
-          })
-          .select("id, email, full_name, team")
-          .single();
-
-      if (insertError) {
-        console.error("Candidate insert error:", insertError);
-
-        return NextResponse.json(
-          { error: "Unable to create candidate." },
-          { status: 500 }
-        );
-      }
-
-      candidate = newCandidate;
     }
 
     return NextResponse.json({
