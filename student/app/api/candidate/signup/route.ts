@@ -9,7 +9,7 @@ export async function POST(request: Request) {
     const email = String(body.email ?? "").trim().toLowerCase();
     const team = String(body.team ?? "").trim();
 
-    // Basic validation
+    // Validate required fields
     if (!fullName) {
       return NextResponse.json(
         { error: "Full name is required." },
@@ -27,13 +27,6 @@ export async function POST(request: Request) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return NextResponse.json(
         { error: "Please enter a valid email address." },
-        { status: 400 }
-      );
-    }
-
-    if (!team) {
-      return NextResponse.json(
-        { error: "Team is required." },
         { status: 400 }
       );
     }
@@ -61,15 +54,38 @@ export async function POST(request: Request) {
     let candidate;
 
     if (existingCandidate) {
-      candidate = existingCandidate;
+      // Update information if the candidate registers again
+      const { data: updatedCandidate, error: updateError } =
+        await supabaseAdmin
+          .from("candidates")
+          .update({
+            full_name: fullName,
+            team: team || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", existingCandidate.id)
+          .select("id, email, full_name, team")
+          .single();
+
+      if (updateError) {
+        console.error("Candidate update error:", updateError);
+
+        return NextResponse.json(
+          { error: "Unable to update candidate information." },
+          { status: 500 }
+        );
+      }
+
+      candidate = updatedCandidate;
     } else {
+      // Create new candidate
       const { data: newCandidate, error: insertError } =
         await supabaseAdmin
           .from("candidates")
           .insert({
             email,
             full_name: fullName,
-            team,
+            team: team || null,
           })
           .select("id, email, full_name, team")
           .single();
