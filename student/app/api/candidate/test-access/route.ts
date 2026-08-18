@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     if (!fullName) {
       return NextResponse.json(
         { error: "Full name is required." },
-        { status: 400 }
+        { status: 400 } 
       );
     }
 
@@ -49,13 +49,18 @@ export async function POST(request: Request) {
         .maybeSingle();
 
     if (candidateError) {
-      console.error("Candidate lookup error:", candidateError);
+  console.error("Candidate lookup error:", candidateError);
 
-      return NextResponse.json(
-        { error: "Unable to verify candidate information." },
-        { status: 500 }
-      );
-    }
+  return NextResponse.json(
+    {
+      error: "Unable to verify candidate information.",
+      details: candidateError.message,
+      code: candidateError.code,
+      hint: candidateError.hint,
+    },
+    { status: 500 }
+  );
+}
 
     if (!candidate) {
       return NextResponse.json(

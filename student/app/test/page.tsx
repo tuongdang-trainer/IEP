@@ -1,7 +1,13 @@
 
 "use client";
 
-import { FormEvent, useState } from "react";
+import {
+  FormEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { useRouter } from "next/navigation";
 
 type AccessResponse = {
   success: boolean;
@@ -75,61 +81,477 @@ type TestStartResponse = {
   questions: TestQuestion[];
 };
 
+type AntiCheatEventType =
+  | "copy"
+  | "paste"
+  | "cut"
+  | "contextmenu"
+  | "tab_switch"
+  | "blur"
+  | "fullscreen_exit";
+
 export default function TestPage() {
+  const router = useRouter();
+
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [team, setTeam] = useState("");
   const [campaignCode, setCampaignCode] = useState("");
 
-  const [access, setAccess] = useState<AccessResponse | null>(null);
-  const [test, setTest] = useState<TestStartResponse | null>(null);
+  const [access, setAccess] =
+    useState<AccessResponse | null>(null);
 
-  const [currentQuestion, setCurrentQuestion] = useState(0);
+  const [test, setTest] =
+    useState<TestStartResponse | null>(null);
 
-  const [selectedAnswer, setSelectedAnswer] = useState<string | null>(
-    null
-  );
+  const [currentQuestion, setCurrentQuestion] =
+    useState(0);
 
-  const [writingAnswer, setWritingAnswer] = useState("");
+  const [selectedAnswer, setSelectedAnswer] =
+    useState<string | null>(null);
+
+  const [writingAnswer, setWritingAnswer] =
+    useState("");
 
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [starting, setStarting] = useState(false);
-  const [saving, setSaving] = useState(false);
 
-  async function handleVerify(event: FormEvent<HTMLFormElement>) {
+const [submitted, setSubmitted] =
+  useState(false);
+
+const [loading, setLoading] =
+  useState(false);
+
+const [starting, setStarting] =
+  useState(false);
+
+const [saving, setSaving] =
+  useState(false);
+
+  /*
+   * Keep the current attempt ID in a ref so
+   * anti-cheating event listeners can always
+   * access the latest attempt without causing
+   * unnecessary re-renders.
+   */
+  const attemptIdRef =
+    useRef<string | null>(null);
+
+  /*
+   * Prevent duplicate fullscreen_exit events
+   * caused by multiple browser events firing
+   * together.
+   */
+  const lastFullscreenEventRef =
+    useRef<number>(0);
+
+  /*
+   * Record an anti-cheating event.
+   *
+   * This request is intentionally best-effort.
+   * If event logging fails, the candidate's
+   * test should not be interrupted.
+   */
+  async function recordAntiCheatEvent(
+    eventType: AntiCheatEventType,
+    metadata?: Record<string, unknown>
+  ) {
+    const attemptId =
+      attemptIdRef.current;
+
+    if (!attemptId) {
+      return;
+    }
+
+    try {
+      await fetch(
+        "/api/candidate/event",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            attemptId,
+            eventType,
+            metadata:
+              metadata ?? {},
+          }),
+          keepalive: true,
+        }
+      );
+    } catch (eventError) {
+      /*
+       * Anti-cheating logging must never
+       * block the test.
+       */
+      console.error(
+        "Anti-cheating event logging error:",
+        eventError
+      );
+    }
+  }
+
+  useEffect(() => {
+  const params = new URLSearchParams(
+    window.location.search
+  );
+
+  setSubmitted(
+    params.get("submitted") === "true"
+  );
+}, []);
+
+  /*
+   * Anti-cheating listeners.
+   *
+   * These are active only while an attempt
+   * is running.
+   */
+  useEffect(() => {
+    if (!test?.attempt.id) {
+      return;
+    }
+
+    attemptIdRef.current =
+      test.attempt.id;
+
+    function handleCopy(
+      event: ClipboardEvent
+    ) {
+      event.preventDefault();
+
+      void recordAntiCheatEvent(
+        "copy",
+        {
+          source: "clipboard",
+        }
+      );
+    }
+
+    function handlePaste(
+      event: ClipboardEvent
+    ) {
+      event.preventDefault();
+
+      void recordAntiCheatEvent(
+        "paste",
+        {
+          source: "clipboard",
+        }
+      );
+    }
+
+    function handleCut(
+      event: ClipboardEvent
+    ) {
+      event.preventDefault();
+
+      void recordAntiCheatEvent(
+        "cut",
+        {
+          source: "clipboard",
+        }
+      );
+    }
+
+    function handleContextMenu(
+      event: MouseEvent
+    ) {
+      event.preventDefault();
+
+      void recordAntiCheatEvent(
+        "contextmenu",
+        {
+          source: "mouse",
+        }
+      );
+    }
+
+    function handleKeyDown(
+      event: KeyboardEvent
+    ) {
+      const key =
+        event.key.toLowerCase();
+
+      const modifier =
+        event.ctrlKey ||
+        event.metaKey;
+
+      /*
+       * Ctrl/Cmd + C
+       * Ctrl/Cmd + V
+       * Ctrl/Cmd + X
+       */
+      if (
+        modifier &&
+        (key === "c" ||
+          key === "v" ||
+          key === "x")
+      ) {
+        event.preventDefault();
+
+        const eventType =
+          key === "c"
+            ? "copy"
+            : key === "v"
+              ? "paste"
+              : "cut";
+
+        void recordAntiCheatEvent(
+          eventType,
+          {
+            source:
+              "keyboard",
+            key,
+          }
+        );
+
+        return;
+      }
+
+      /*
+       * F12
+       *
+       * This does not guarantee that
+       * developer tools cannot be opened,
+       * but it prevents the common shortcut.
+       */
+      if (event.key === "F12") {
+        event.preventDefault();
+
+        void recordAntiCheatEvent(
+          "contextmenu",
+          {
+            source:
+              "keyboard",
+            key: "F12",
+          }
+        );
+
+        return;
+      }
+
+      /*
+       * Ctrl/Cmd + Shift + I
+       * Ctrl/Cmd + Shift + J
+       * Ctrl/Cmd + Shift + C
+       *
+       * Common browser developer-tool
+       * shortcuts.
+       */
+      if (
+        modifier &&
+        event.shiftKey &&
+        (key === "i" ||
+          key === "j" ||
+          key === "c")
+      ) {
+        event.preventDefault();
+
+        void recordAntiCheatEvent(
+          "contextmenu",
+          {
+            source:
+              "keyboard",
+            key,
+            shiftKey: true,
+          }
+        );
+      }
+    }
+
+    function handleVisibilityChange() {
+      if (
+        document.visibilityState ===
+        "hidden"
+      ) {
+        void recordAntiCheatEvent(
+          "tab_switch",
+          {
+            visibilityState:
+              document.visibilityState,
+          }
+        );
+      }
+    }
+
+    function handleWindowBlur() {
+      void recordAntiCheatEvent(
+        "blur",
+        {
+          source: "window",
+        }
+      );
+    }
+
+    function handleFullscreenChange() {
+      if (
+        document.fullscreenElement ===
+        null
+      ) {
+        const now = Date.now();
+
+        /*
+         * Avoid logging the same fullscreen
+         * exit twice within 500ms.
+         */
+        if (
+          now -
+            lastFullscreenEventRef.current <
+          500
+        ) {
+          return;
+        }
+
+        lastFullscreenEventRef.current =
+          now;
+
+        void recordAntiCheatEvent(
+          "fullscreen_exit",
+          {
+            source:
+              "fullscreenchange",
+          }
+        );
+      }
+    }
+
+    document.addEventListener(
+      "copy",
+      handleCopy
+    );
+
+    document.addEventListener(
+      "paste",
+      handlePaste
+    );
+
+    document.addEventListener(
+      "cut",
+      handleCut
+    );
+
+    document.addEventListener(
+      "contextmenu",
+      handleContextMenu
+    );
+
+    document.addEventListener(
+      "keydown",
+      handleKeyDown
+    );
+
+    document.addEventListener(
+      "visibilitychange",
+      handleVisibilityChange
+    );
+
+    window.addEventListener(
+      "blur",
+      handleWindowBlur
+    );
+
+    document.addEventListener(
+      "fullscreenchange",
+      handleFullscreenChange
+    );
+
+    return () => {
+      document.removeEventListener(
+        "copy",
+        handleCopy
+      );
+
+      document.removeEventListener(
+        "paste",
+        handlePaste
+      );
+
+      document.removeEventListener(
+        "cut",
+        handleCut
+      );
+
+      document.removeEventListener(
+        "contextmenu",
+        handleContextMenu
+      );
+
+      document.removeEventListener(
+        "keydown",
+        handleKeyDown
+      );
+
+      document.removeEventListener(
+        "visibilitychange",
+        handleVisibilityChange
+      );
+
+      window.removeEventListener(
+        "blur",
+        handleWindowBlur
+      );
+
+      document.removeEventListener(
+        "fullscreenchange",
+        handleFullscreenChange
+      );
+    };
+  }, [test?.attempt.id]);
+
+  async function handleVerify(
+    event: FormEvent<HTMLFormElement>
+  ) {
     event.preventDefault();
 
     setError("");
     setAccess(null);
     setTest(null);
+    attemptIdRef.current = null;
+
     setLoading(true);
 
     try {
-      const response = await fetch("/api/candidate/test-access", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          fullName,
-          email,
-          team,
-          campaignCode,
-        }),
-      });
+      const response =
+        await fetch(
+          "/api/candidate/test-access",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              fullName,
+              email,
+              team,
+              campaignCode,
+            }),
+          }
+        );
 
-      const data = await response.json();
+      const data =
+        await response.json();
 
       if (!response.ok) {
-        setError(data.error || "Unable to verify test access.");
+        setError(
+          data.error ||
+            "Unable to verify test access."
+        );
         return;
       }
 
       setAccess(data);
     } catch (requestError) {
-      console.error("Test access request error:", requestError);
-      setError("Unable to connect to the server. Please try again.");
+      console.error(
+        "Test access request error:",
+        requestError
+      );
+
+      setError(
+        "Unable to connect to the server. Please try again."
+      );
     } finally {
       setLoading(false);
     }
@@ -144,32 +566,76 @@ export default function TestPage() {
     setStarting(true);
 
     try {
-      const response = await fetch("/api/candidate/test-start", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          candidateId: access.candidate.id,
-          campaignId: access.campaign.id,
-          testId: access.test.id,
-        }),
-      });
+      const response =
+        await fetch(
+          "/api/candidate/test-start",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              candidateId:
+                access.candidate.id,
+              campaignId:
+                access.campaign.id,
+              testId:
+                access.test.id,
+            }),
+          }
+        );
 
-      const data = await response.json();
+      const data =
+        await response.json();
 
       if (!response.ok) {
-        setError(data.error || "Unable to start the test.");
+        setError(
+          data.error ||
+            "Unable to start the test."
+        );
         return;
       }
 
       setTest(data);
+
+      attemptIdRef.current =
+        data.attempt?.id ?? null;
+
       setCurrentQuestion(0);
       setSelectedAnswer(null);
       setWritingAnswer("");
+
+      /*
+       * Try to enter fullscreen.
+       *
+       * Some browsers may reject this request.
+       * That is okay — the test itself still
+       * continues and fullscreen_exit is only
+       * logged when fullscreen was actually active.
+       */
+      try {
+        if (
+          document.fullscreenEnabled &&
+          !document.fullscreenElement
+        ) {
+          await document.documentElement.requestFullscreen();
+        }
+      } catch (fullscreenError) {
+        console.warn(
+          "Fullscreen request was not allowed:",
+          fullscreenError
+        );
+      }
     } catch (requestError) {
-      console.error("Test start request error:", requestError);
-      setError("Unable to connect to the server. Please try again.");
+      console.error(
+        "Test start request error:",
+        requestError
+      );
+
+      setError(
+        "Unable to connect to the server. Please try again."
+      );
     } finally {
       setStarting(false);
     }
@@ -180,21 +646,36 @@ export default function TestPage() {
       return false;
     }
 
-    const question = test.questions[currentQuestion];
+    const question =
+      test.questions[currentQuestion];
 
     if (!question) {
       return false;
     }
 
-    const isWriting = question.questionType === "writing";
+    const isWriting =
+      question.questionType ===
+      "writing";
 
-    if (isWriting && !writingAnswer.trim()) {
-      setError("Please enter your writing answer before continuing.");
+    if (
+      isWriting &&
+      !writingAnswer.trim()
+    ) {
+      setError(
+        "Please enter your writing answer before continuing."
+      );
+
       return false;
     }
 
-    if (!isWriting && !selectedAnswer) {
-      setError("Please select an answer before continuing.");
+    if (
+      !isWriting &&
+      !selectedAnswer
+    ) {
+      setError(
+        "Please select an answer before continuing."
+      );
+
       return false;
     }
 
@@ -202,75 +683,139 @@ export default function TestPage() {
     setSaving(true);
 
     try {
-      const response = await fetch("/api/candidate/save-answer", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          attemptId: test.attempt.id,
-          attemptQuestionId: question.attemptQuestionId,
-          selectedOptionId: isWriting ? null : selectedAnswer,
-          answerText: isWriting ? writingAnswer : null,
-        }),
-      });
+      const response =
+        await fetch(
+          "/api/candidate/save-answer",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              attemptId:
+                test.attempt.id,
+              attemptQuestionId:
+                question.attemptQuestionId,
+              selectedOptionId:
+                isWriting
+                  ? null
+                  : selectedAnswer,
+              answerText:
+                isWriting
+                  ? writingAnswer
+                  : null,
+            }),
+          }
+        );
 
-      const data = await response.json();
+      const data =
+        await response.json();
 
       if (!response.ok) {
-        setError(data.error || "Unable to save answer.");
+        setError(
+          data.error ||
+            "Unable to save answer."
+        );
+
         return false;
       }
 
       return true;
     } catch (requestError) {
-      console.error("Save answer request error:", requestError);
-      setError("Unable to connect to the server. Please try again.");
+      console.error(
+        "Save answer request error:",
+        requestError
+      );
+
+      setError(
+        "Unable to connect to the server. Please try again."
+      );
+
       return false;
     } finally {
       setSaving(false);
     }
   }
 
-   async function handleNext() {
+  async function handleNext() {
     if (!test) {
       return;
     }
 
-    const saved = await saveCurrentAnswer();
+    const saved =
+      await saveCurrentAnswer();
 
     if (!saved) {
       return;
     }
 
     const isLastQuestion =
-      currentQuestion === test.questions.length - 1;
+      currentQuestion ===
+      test.questions.length - 1;
 
     if (isLastQuestion) {
       setError("");
       setSaving(true);
 
       try {
-        const response = await fetch("/api/candidate/test-submit", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            attemptId: test.attempt.id,
-          }),
-        });
+        const response =
+          await fetch(
+            "/api/candidate/test-submit",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
+              body: JSON.stringify({
+                attemptId:
+                  test.attempt.id,
+              }),
+            }
+          );
 
-        const data = await response.json();
+        const data =
+          await response.json();
 
         if (!response.ok) {
-          setError(data.error || "Unable to submit test.");
+          setError(
+            data.error ||
+              "Unable to submit test."
+          );
+
           return;
         }
 
-        window.location.href = "/test?submitted=true";
+        /*
+         * Exit fullscreen after submission.
+         */
+        try {
+          if (
+            document.fullscreenElement
+          ) {
+            await document.exitFullscreen();
+          }
+        } catch (fullscreenError) {
+          console.warn(
+            "Unable to exit fullscreen:",
+            fullscreenError
+          );
+        }
+
+        /*
+         * Use Next.js router instead of
+         * window.location.href.
+         */
+        router.push(
+          "/test?submitted=true"
+        );
       } catch (requestError) {
-        console.error("Submit test request error:", requestError);
+        console.error(
+          "Submit test request error:",
+          requestError
+        );
+
         setError(
           "Unable to connect to the server. Please try again."
         );
@@ -281,7 +826,10 @@ export default function TestPage() {
       return;
     }
 
-    setCurrentQuestion((value) => value + 1);
+    setCurrentQuestion(
+      (value) => value + 1
+    );
+
     setSelectedAnswer(null);
     setWritingAnswer("");
     setError("");
@@ -292,14 +840,130 @@ export default function TestPage() {
       return;
     }
 
-    setCurrentQuestion((value) => value - 1);
+    setCurrentQuestion(
+      (value) => value - 1
+    );
+
     setSelectedAnswer(null);
     setWritingAnswer("");
     setError("");
   }
 
+  if (submitted) {
+  return (
+    <main className="min-h-screen bg-zinc-50 px-6 py-12">
+      <div className="mx-auto flex min-h-[80vh] max-w-2xl items-center justify-center">
+        <div className="w-full rounded-2xl bg-white p-10 text-center shadow-sm">
+
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-green-100">
+            <svg
+              className="h-8 w-8 text-green-600"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="m5 12 4 4L19 6"
+              />
+            </svg>
+          </div>
+
+          <h1 className="mt-6 text-3xl font-semibold text-zinc-900">
+            Test Submitted Successfully
+          </h1>
+
+          <p className="mt-4 text-base leading-7 text-zinc-600">
+            Thank you for completing the English Placement Test.
+          </p>
+
+          <p className="mt-2 text-sm leading-6 text-zinc-500">
+            Your responses have been recorded successfully.
+            Your teacher will review your results and writing
+            response.
+          </p>
+
+          <div className="mt-8 rounded-xl bg-zinc-50 p-5 text-left">
+            <p className="text-sm font-medium text-zinc-800">
+              What happens next?
+            </p>
+
+            <p className="mt-2 text-sm leading-6 text-zinc-600">
+              Your test will now be reviewed by the teaching team.
+              You do not need to take any further action.
+            </p>
+          </div>
+
+          <p className="mt-8 text-xs text-zinc-400">
+            You may now close this page.
+          </p>
+
+        </div>
+      </div>
+    </main>
+  );
+}
+
+if (submitted) {
+  return (
+    <main className="min-h-screen bg-zinc-50 px-6 py-12">
+      <div className="mx-auto flex min-h-[80vh] max-w-2xl items-center justify-center">
+        <div className="w-full rounded-2xl bg-white p-10 text-center shadow-sm">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-green-100">
+            <svg
+              className="h-8 w-8 text-green-600"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="m5 12 4 4L19 6"
+              />
+            </svg>
+          </div>
+
+          <h1 className="mt-6 text-3xl font-semibold text-zinc-900">
+            Test Submitted Successfully
+          </h1>
+
+          <p className="mt-4 text-base leading-7 text-zinc-600">
+            Thank you for completing the English Placement Test.
+          </p>
+
+          <p className="mt-2 text-sm leading-6 text-zinc-500">
+            Your responses have been recorded successfully.
+            Your teacher will review your results and writing
+            response.
+          </p>
+
+          <div className="mt-8 rounded-xl bg-zinc-50 p-5 text-left">
+            <p className="text-sm font-medium text-zinc-800">
+              What happens next?
+            </p>
+
+            <p className="mt-2 text-sm leading-6 text-zinc-600">
+              Your test will now be reviewed by the teaching team.
+              You do not need to take any further action.
+            </p>
+          </div>
+
+          <p className="mt-8 text-xs text-zinc-400">
+            You may now close this page.
+          </p>
+        </div>
+      </div>
+    </main>
+  );
+} 
+
   if (test) {
-    const question = test.questions[currentQuestion];
+    const question =
+      test.questions[currentQuestion];
 
     if (!question) {
       return (
@@ -317,7 +981,9 @@ export default function TestPage() {
       );
     }
 
-    const isWriting = question.questionType === "writing";
+    const isWriting =
+      question.questionType ===
+      "writing";
 
     return (
       <main className="min-h-screen bg-zinc-50 px-6 py-10">
@@ -330,13 +996,16 @@ export default function TestPage() {
               </p>
 
               <p className="mt-1 text-sm text-zinc-500">
-                Question {question.questionNumber} of{" "}
+                Question{" "}
+                {question.questionNumber}{" "}
+                of{" "}
                 {test.questions.length}
               </p>
             </div>
 
             <div className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-700 shadow-sm">
-              {question.cefrLevel || question.skill}
+              {question.cefrLevel ||
+                question.skill}
             </div>
           </div>
 
@@ -354,11 +1023,17 @@ export default function TestPage() {
                 </p>
               )}
 
-              {isWriting && question.writingTask?.title && (
-                <p className="mt-4 text-lg font-semibold text-zinc-800">
-                  {question.writingTask.title}
-                </p>
-              )}
+              {isWriting &&
+                question.writingTask
+                  ?.title && (
+                  <p className="mt-4 text-lg font-semibold text-zinc-800">
+                    {
+                      question
+                        .writingTask
+                        .title
+                    }
+                  </p>
+                )}
 
               <h1 className="mt-5 text-2xl font-semibold leading-relaxed text-zinc-900">
                 {question.questionText}
@@ -368,68 +1043,94 @@ export default function TestPage() {
 
             {!isWriting && (
               <div className="space-y-3">
-                {question.options.map((option) => {
-                  const isSelected =
-                    selectedAnswer === option.id;
+                {question.options.map(
+                  (option) => {
+                    const isSelected =
+                      selectedAnswer ===
+                      option.id;
 
-                  return (
-                    <button
-                      key={option.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedAnswer(option.id);
-                        setError("");
-                      }}
-                      className={
-                        "flex w-full items-center gap-4 rounded-xl border p-4 text-left transition " +
-                        (isSelected
-                          ? " border-zinc-900 bg-zinc-100"
-                          : " border-zinc-200 bg-white hover:border-zinc-400")
-                      }
-                    >
-                      <span
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedAnswer(
+                            option.id
+                          );
+                          setError("");
+                        }}
                         className={
-                          "flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold " +
+                          "flex w-full items-center gap-4 rounded-xl border p-4 text-left transition " +
                           (isSelected
-                            ? " border-zinc-900 bg-zinc-900 text-white"
-                            : " border-zinc-300 text-zinc-700")
+                            ? " border-zinc-900 bg-zinc-100"
+                            : " border-zinc-200 bg-white hover:border-zinc-400")
                         }
                       >
-                        {option.key}
-                      </span>
+                        <span
+                          className={
+                            "flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold " +
+                            (isSelected
+                              ? " border-zinc-900 bg-zinc-900 text-white"
+                              : " border-zinc-300 text-zinc-700")
+                          }
+                        >
+                          {option.key}
+                        </span>
 
-                      <span className="text-zinc-800">
-                        {option.text}
-                      </span>
-                    </button>
-                  );
-                })}
+                        <span className="text-zinc-800">
+                          {option.text}
+                        </span>
+                      </button>
+                    );
+                  }
+                )}
               </div>
             )}
 
             {isWriting && (
               <div className="space-y-4">
 
-                {question.writingTask?.instructions && (
+                {question
+                  .writingTask
+                  ?.instructions && (
                   <div className="rounded-xl bg-zinc-50 p-4 text-sm text-zinc-600">
-                    {question.writingTask.instructions}
+                    {
+                      question
+                        .writingTask
+                        .instructions
+                    }
                   </div>
                 )}
 
-                {(question.writingTask?.wordLimitMin !== null ||
-                  question.writingTask?.wordLimitMax !== null) && (
+                {(question
+                  .writingTask
+                  ?.wordLimitMin !==
+                  null ||
+                  question
+                    .writingTask
+                    ?.wordLimitMax !==
+                    null) && (
                   <div className="text-sm text-zinc-500">
                     Word limit:{" "}
-                    {question.writingTask?.wordLimitMin ?? "—"}{" "}
+                    {question
+                      .writingTask
+                      ?.wordLimitMin ??
+                      "—"}{" "}
                     –{" "}
-                    {question.writingTask?.wordLimitMax ?? "—"} words
+                    {question
+                      .writingTask
+                      ?.wordLimitMax ??
+                      "—"}{" "}
+                    words
                   </div>
                 )}
 
                 <textarea
                   value={writingAnswer}
                   onChange={(event) => {
-                    setWritingAnswer(event.target.value);
+                    setWritingAnswer(
+                      event.target.value
+                    );
                     setError("");
                   }}
                   placeholder="Write your answer here..."
@@ -440,15 +1141,25 @@ export default function TestPage() {
                 <div className="flex items-center justify-between text-sm text-zinc-500">
                   <span>
                     {writingAnswer.trim()
-                      ? writingAnswer.trim().split(/\s+/).length
+                      ? writingAnswer
+                          .trim()
+                          .split(/\s+/)
+                          .length
                       : 0}{" "}
                     words
                   </span>
 
-                  {question.writingTask?.wordLimitMax && (
+                  {question
+                    .writingTask
+                    ?.wordLimitMax && (
                     <span>
                       Maximum:{" "}
-                      {question.writingTask.wordLimitMax} words
+                      {
+                        question
+                          .writingTask
+                          .wordLimitMax
+                      }{" "}
+                      words
                     </span>
                   )}
                 </div>
@@ -465,8 +1176,13 @@ export default function TestPage() {
             <div className="mt-8 flex items-center justify-between border-t border-zinc-100 pt-6">
               <button
                 type="button"
-                disabled={currentQuestion === 0 || saving}
-                onClick={handlePrevious}
+                disabled={
+                  currentQuestion ===
+                    0 || saving
+                }
+                onClick={
+                  handlePrevious
+                }
                 className="rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Previous
@@ -474,13 +1190,18 @@ export default function TestPage() {
 
               <button
                 type="button"
-                onClick={handleNext}
+                onClick={
+                  handleNext
+                }
                 disabled={saving}
                 className="rounded-xl bg-zinc-900 px-6 py-3 font-medium text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {saving
                   ? "Saving..."
-                  : currentQuestion === test.questions.length - 1
+                  : currentQuestion ===
+                      test.questions
+                        .length -
+                        1
                     ? "Submit Test"
                     : "Next"}
               </button>
@@ -518,18 +1239,31 @@ export default function TestPage() {
 
               <div className="mt-3 space-y-1 text-sm text-zinc-600">
                 <p>
-                  <strong>Name:</strong>{" "}
-                  {access.candidate.fullName}
+                  <strong>
+                    Name:
+                  </strong>{" "}
+                  {
+                    access.candidate
+                      .fullName
+                  }
                 </p>
 
                 <p>
-                  <strong>Email:</strong>{" "}
-                  {access.candidate.email}
+                  <strong>
+                    Email:
+                  </strong>{" "}
+                  {
+                    access.candidate
+                      .email
+                  }
                 </p>
 
                 <p>
-                  <strong>Team:</strong>{" "}
-                  {access.candidate.team || "—"}
+                  <strong>
+                    Team:
+                  </strong>{" "}
+                  {access.candidate
+                    .team || "—"}
                 </p>
               </div>
             </div>
@@ -541,13 +1275,23 @@ export default function TestPage() {
 
               <div className="mt-3 space-y-1 text-sm text-zinc-600">
                 <p>
-                  <strong>Campaign:</strong>{" "}
-                  {access.campaign.name}
+                  <strong>
+                    Campaign:
+                  </strong>{" "}
+                  {
+                    access.campaign
+                      .name
+                  }
                 </p>
 
                 <p>
-                  <strong>Code:</strong>{" "}
-                  {access.campaign.code}
+                  <strong>
+                    Code:
+                  </strong>{" "}
+                  {
+                    access.campaign
+                      .code
+                  }
                 </p>
               </div>
             </div>
@@ -558,9 +1302,13 @@ export default function TestPage() {
                 {access.test.title}
               </p>
 
-              {access.test.description && (
+              {access.test
+                .description && (
                 <p className="mt-2 text-sm text-zinc-600">
-                  {access.test.description}
+                  {
+                    access.test
+                      .description
+                  }
                 </p>
               )}
 
@@ -572,7 +1320,11 @@ export default function TestPage() {
                   </p>
 
                   <p className="mt-1 font-medium">
-                    {access.test.durationMinutes} minutes
+                    {
+                      access.test
+                        .durationMinutes
+                    }{" "}
+                    minutes
                   </p>
                 </div>
 
@@ -582,7 +1334,10 @@ export default function TestPage() {
                   </p>
 
                   <p className="mt-1 font-medium">
-                    {access.test.totalQuestions}
+                    {
+                      access.test
+                        .totalQuestions
+                    }
                   </p>
                 </div>
 
@@ -591,19 +1346,26 @@ export default function TestPage() {
 
           </div>
 
-          {access.access === "resume" && access.attempt && (
-            <div className="mt-6 rounded-xl border border-zinc-200 bg-zinc-50 p-5">
+          {access.access ===
+            "resume" &&
+            access.attempt && (
+              <div className="mt-6 rounded-xl border border-zinc-200 bg-zinc-50 p-5">
 
-              <p className="font-medium text-zinc-900">
-                You have an active test attempt.
-              </p>
+                <p className="font-medium text-zinc-900">
+                  You have an active test attempt.
+                </p>
 
-              <p className="mt-1 text-sm text-zinc-600">
-                Current status: {access.attempt.status}
-              </p>
+                <p className="mt-1 text-sm text-zinc-600">
+                  Current status:{" "}
+                  {
+                    access
+                      .attempt
+                      .status
+                  }
+                </p>
 
-            </div>
-          )}
+              </div>
+            )}
 
           {error && (
             <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
@@ -613,13 +1375,16 @@ export default function TestPage() {
 
           <button
             type="button"
-            onClick={handleStartTest}
+            onClick={
+              handleStartTest
+            }
             disabled={starting}
             className="mt-8 w-full rounded-xl bg-zinc-900 px-5 py-3 font-medium text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {starting
               ? "Starting Test..."
-              : access.access === "resume"
+              : access.access ===
+                  "resume"
                 ? "Resume Test"
                 : "Start Test"}
           </button>
@@ -646,7 +1411,9 @@ export default function TestPage() {
         </p>
 
         <form
-          onSubmit={handleVerify}
+          onSubmit={
+            handleVerify
+          }
           className="mt-8 space-y-5"
         >
 
@@ -663,7 +1430,9 @@ export default function TestPage() {
               type="text"
               value={fullName}
               onChange={(event) =>
-                setFullName(event.target.value)
+                setFullName(
+                  event.target.value
+                )
               }
               required
               autoComplete="name"
@@ -685,7 +1454,9 @@ export default function TestPage() {
               type="email"
               value={email}
               onChange={(event) =>
-                setEmail(event.target.value)
+                setEmail(
+                  event.target.value
+                )
               }
               required
               autoComplete="email"
@@ -707,7 +1478,9 @@ export default function TestPage() {
               type="text"
               value={team}
               onChange={(event) =>
-                setTeam(event.target.value)
+                setTeam(
+                  event.target.value
+                )
               }
               required
               className="w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none transition focus:border-zinc-900"
@@ -728,7 +1501,9 @@ export default function TestPage() {
               type="text"
               value={campaignCode}
               onChange={(event) =>
-                setCampaignCode(event.target.value.toUpperCase())
+                setCampaignCode(
+                  event.target.value.toUpperCase()
+                )
               }
               required
               className="w-full rounded-xl border border-zinc-300 px-4 py-3 uppercase outline-none transition focus:border-zinc-900"
