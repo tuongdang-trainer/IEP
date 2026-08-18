@@ -3,11 +3,15 @@
 
 import {
   FormEvent,
+  Suspense,
   useEffect,
   useRef,
   useState,
 } from "react";
-import { useRouter } from "next/navigation";
+import {
+  useRouter,
+  useSearchParams,
+} from "next/navigation";
 
 type AccessResponse = {
   success: boolean;
@@ -90,33 +94,42 @@ type AntiCheatEventType =
   | "blur"
   | "fullscreen_exit";
 
-export default function TestPage() {
+function TestPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
-  const [team, setTeam] = useState("");
-  const [campaignCode, setCampaignCode] = useState("");
+  const submitted =
+    searchParams.get("submitted") === "true";
 
-  const [access, setAccess] =
-    useState<AccessResponse | null>(null);
+const [fullName, setFullName] =
+  useState("");
 
-  const [test, setTest] =
-    useState<TestStartResponse | null>(null);
+const [email, setEmail] =
+  useState("");
 
-  const [currentQuestion, setCurrentQuestion] =
-    useState(0);
+const [team, setTeam] =
+  useState("");
 
-  const [selectedAnswer, setSelectedAnswer] =
-    useState<string | null>(null);
+const [campaignCode, setCampaignCode] =
+  useState("");
 
-  const [writingAnswer, setWritingAnswer] =
-    useState("");
+const [access, setAccess] =
+  useState<AccessResponse | null>(null);
 
-  const [error, setError] = useState("");
+const [test, setTest] =
+  useState<TestStartResponse | null>(null);
 
-const [submitted, setSubmitted] =
-  useState(false);
+const [currentQuestion, setCurrentQuestion] =
+  useState(0);
+
+const [selectedAnswer, setSelectedAnswer] =
+  useState<string | null>(null);
+
+const [writingAnswer, setWritingAnswer] =
+  useState("");
+
+const [error, setError] =
+  useState("");
 
 const [loading, setLoading] =
   useState(false);
@@ -127,15 +140,20 @@ const [starting, setStarting] =
 const [saving, setSaving] =
   useState(false);
 
-  /*
-   * Keep the current attempt ID in a ref so
-   * anti-cheating event listeners can always
-   * access the latest attempt without causing
-   * unnecessary re-renders.
-   */
-  const attemptIdRef =
-    useRef<string | null>(null);
+const [remainingSeconds, setRemainingSeconds] =
+  useState<number | null>(null);
 
+const autoSubmitRef =
+  useRef(false);
+
+/*
+ * Keep the current attempt ID in a ref so
+ * anti-cheating event listeners can always
+ * access the latest attempt without causing
+ * unnecessary re-renders.
+ */
+const attemptIdRef =
+  useRef<string | null>(null);
   /*
    * Prevent duplicate fullscreen_exit events
    * caused by multiple browser events firing
@@ -192,16 +210,7 @@ const [saving, setSaving] =
     }
   }
 
-  useEffect(() => {
-  const params = new URLSearchParams(
-    window.location.search
-  );
-
-  setSubmitted(
-    params.get("submitted") === "true"
-  );
-}, []);
-
+ 
   /*
    * Anti-cheating listeners.
    *
@@ -641,6 +650,128 @@ const [saving, setSaving] =
     }
   }
 
+    useEffect(() => {
+    const attemptId = test?.attempt.id;
+    const expiresAtValue = test?.attempt.expiresAt;
+
+    if (!attemptId || !expiresAtValue) {
+      return;
+    }
+
+    const expiresAt = new Date(
+      expiresAtValue
+    ).getTime();
+
+    if (Number.isNaN(expiresAt)) {
+      console.error(
+        "Invalid test expiration time:",
+        expiresAtValue
+      );
+      return;
+    }
+
+    autoSubmitRef.current = false;
+
+    function calculateRemainingSeconds() {
+      return Math.max(
+        0,
+        Math.ceil(
+          (expiresAt - Date.now()) / 1000
+        )
+      );
+    }
+
+    async function autoSubmitTest() {
+      if (autoSubmitRef.current) {
+        return;
+      }
+
+      autoSubmitRef.current = true;
+      setError("");
+      setSaving(true);
+
+      try {
+        const response = await fetch(
+          "/api/candidate/test-submit",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              attemptId,
+              autoSubmit: true,
+            }),
+          }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          console.error(
+            "Auto-submit failed:",
+            data.error
+          );
+
+          autoSubmitRef.current = false;
+
+          setError(
+            data.error ||
+              "Unable to automatically submit the test."
+          );
+
+          return;
+        }
+
+        try {
+          if (document.fullscreenElement) {
+            await document.exitFullscreen();
+          }
+        } catch (fullscreenError) {
+          console.warn(
+            "Unable to exit fullscreen:",
+            fullscreenError
+          );
+        }
+
+        router.push("/test?submitted=true");
+      } catch (requestError) {
+        console.error(
+          "Auto-submit request error:",
+          requestError
+        );
+
+        autoSubmitRef.current = false;
+
+        setError(
+          "Unable to automatically submit the test. Please contact your teacher."
+        );
+      } finally {
+        setSaving(false);
+      }
+    }
+
+    const timer = window.setInterval(() => {
+      const seconds =
+        calculateRemainingSeconds();
+
+      setRemainingSeconds(seconds);
+
+      if (seconds <= 0) {
+        window.clearInterval(timer);
+        void autoSubmitTest();
+      }
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [
+    test?.attempt.id,
+    test?.attempt.expiresAt,
+    router,
+  ]);
+
   async function saveCurrentAnswer() {
     if (!test) {
       return false;
@@ -849,63 +980,6 @@ const [saving, setSaving] =
     setError("");
   }
 
-  if (submitted) {
-  return (
-    <main className="min-h-screen bg-zinc-50 px-6 py-12">
-      <div className="mx-auto flex min-h-[80vh] max-w-2xl items-center justify-center">
-        <div className="w-full rounded-2xl bg-white p-10 text-center shadow-sm">
-
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-green-100">
-            <svg
-              className="h-8 w-8 text-green-600"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="m5 12 4 4L19 6"
-              />
-            </svg>
-          </div>
-
-          <h1 className="mt-6 text-3xl font-semibold text-zinc-900">
-            Test Submitted Successfully
-          </h1>
-
-          <p className="mt-4 text-base leading-7 text-zinc-600">
-            Thank you for completing the English Placement Test.
-          </p>
-
-          <p className="mt-2 text-sm leading-6 text-zinc-500">
-            Your responses have been recorded successfully.
-            Your teacher will review your results and writing
-            response.
-          </p>
-
-          <div className="mt-8 rounded-xl bg-zinc-50 p-5 text-left">
-            <p className="text-sm font-medium text-zinc-800">
-              What happens next?
-            </p>
-
-            <p className="mt-2 text-sm leading-6 text-zinc-600">
-              Your test will now be reviewed by the teaching team.
-              You do not need to take any further action.
-            </p>
-          </div>
-
-          <p className="mt-8 text-xs text-zinc-400">
-            You may now close this page.
-          </p>
-
-        </div>
-      </div>
-    </main>
-  );
-}
-
 if (submitted) {
   return (
     <main className="min-h-screen bg-zinc-50 px-6 py-12">
@@ -1003,10 +1077,27 @@ if (submitted) {
               </p>
             </div>
 
-            <div className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-700 shadow-sm">
-              {question.cefrLevel ||
-                question.skill}
-            </div>
+            <div className="flex items-center gap-3">
+  {remainingSeconds !== null && (
+    <div className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-zinc-700 shadow-sm">
+      Time left:{" "}
+      {Math.floor(
+        remainingSeconds / 60
+      )
+        .toString()
+        .padStart(2, "0")}
+      :
+      {(remainingSeconds % 60)
+        .toString()
+        .padStart(2, "0")}
+    </div>
+  )}
+
+  <div className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-700 shadow-sm">
+    {question.cefrLevel ||
+      question.skill}
+  </div>
+</div>
           </div>
 
           <div className="rounded-2xl bg-white p-8 shadow-sm">
@@ -1213,11 +1304,10 @@ if (submitted) {
     );
   }
 
-  if (access) {
+    if (access) {
     return (
       <main className="min-h-screen bg-zinc-50 px-6 py-12">
         <div className="mx-auto max-w-3xl rounded-2xl bg-white p-8 shadow-sm">
-
           <p className="text-sm font-medium text-zinc-500">
             English Placement Test
           </p>
@@ -1231,7 +1321,6 @@ if (submitted) {
           </p>
 
           <div className="mt-8 space-y-4">
-
             <div className="rounded-xl bg-zinc-50 p-5">
               <p className="font-medium text-zinc-900">
                 Candidate
@@ -1239,31 +1328,18 @@ if (submitted) {
 
               <div className="mt-3 space-y-1 text-sm text-zinc-600">
                 <p>
-                  <strong>
-                    Name:
-                  </strong>{" "}
-                  {
-                    access.candidate
-                      .fullName
-                  }
+                  <strong>Name:</strong>{" "}
+                  {access.candidate.fullName}
                 </p>
 
                 <p>
-                  <strong>
-                    Email:
-                  </strong>{" "}
-                  {
-                    access.candidate
-                      .email
-                  }
+                  <strong>Email:</strong>{" "}
+                  {access.candidate.email}
                 </p>
 
                 <p>
-                  <strong>
-                    Team:
-                  </strong>{" "}
-                  {access.candidate
-                    .team || "—"}
+                  <strong>Team:</strong>{" "}
+                  {access.candidate.team || "—"}
                 </p>
               </div>
             </div>
@@ -1275,56 +1351,36 @@ if (submitted) {
 
               <div className="mt-3 space-y-1 text-sm text-zinc-600">
                 <p>
-                  <strong>
-                    Campaign:
-                  </strong>{" "}
-                  {
-                    access.campaign
-                      .name
-                  }
+                  <strong>Campaign:</strong>{" "}
+                  {access.campaign.name}
                 </p>
 
                 <p>
-                  <strong>
-                    Code:
-                  </strong>{" "}
-                  {
-                    access.campaign
-                      .code
-                  }
+                  <strong>Code:</strong>{" "}
+                  {access.campaign.code}
                 </p>
               </div>
             </div>
 
             <div className="rounded-xl border border-zinc-200 p-5">
-
               <p className="font-medium text-zinc-900">
                 {access.test.title}
               </p>
 
-              {access.test
-                .description && (
+              {access.test.description && (
                 <p className="mt-2 text-sm text-zinc-600">
-                  {
-                    access.test
-                      .description
-                  }
+                  {access.test.description}
                 </p>
               )}
 
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
-
                 <div className="rounded-lg bg-zinc-50 p-4">
                   <p className="text-xs text-zinc-500">
                     Duration
                   </p>
 
                   <p className="mt-1 font-medium">
-                    {
-                      access.test
-                        .durationMinutes
-                    }{" "}
-                    minutes
+                    {access.test.durationMinutes} minutes
                   </p>
                 </div>
 
@@ -1334,36 +1390,24 @@ if (submitted) {
                   </p>
 
                   <p className="mt-1 font-medium">
-                    {
-                      access.test
-                        .totalQuestions
-                    }
+                    {access.test.totalQuestions}
                   </p>
                 </div>
-
               </div>
             </div>
-
           </div>
 
-          {access.access ===
-            "resume" &&
+          {access.access === "resume" &&
             access.attempt && (
               <div className="mt-6 rounded-xl border border-zinc-200 bg-zinc-50 p-5">
-
                 <p className="font-medium text-zinc-900">
                   You have an active test attempt.
                 </p>
 
                 <p className="mt-1 text-sm text-zinc-600">
                   Current status:{" "}
-                  {
-                    access
-                      .attempt
-                      .status
-                  }
+                  {access.attempt.status}
                 </p>
-
               </div>
             )}
 
@@ -1375,20 +1419,16 @@ if (submitted) {
 
           <button
             type="button"
-            onClick={
-              handleStartTest
-            }
+            onClick={handleStartTest}
             disabled={starting}
             className="mt-8 w-full rounded-xl bg-zinc-900 px-5 py-3 font-medium text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {starting
               ? "Starting Test..."
-              : access.access ===
-                  "resume"
+              : access.access === "resume"
                 ? "Resume Test"
                 : "Start Test"}
           </button>
-
         </div>
       </main>
     );
@@ -1397,7 +1437,6 @@ if (submitted) {
   return (
     <main className="min-h-screen bg-zinc-50 px-6 py-12">
       <div className="mx-auto max-w-2xl rounded-2xl bg-white p-8 shadow-sm">
-
         <p className="text-sm font-medium text-zinc-500">
           English Placement Test
         </p>
@@ -1407,16 +1446,14 @@ if (submitted) {
         </h1>
 
         <p className="mt-3 text-zinc-600">
-          Enter the information you used during registration and your campaign code to access the test.
+          Enter the information you used during registration and your
+          campaign code to access the test.
         </p>
 
         <form
-          onSubmit={
-            handleVerify
-          }
+          onSubmit={handleVerify}
           className="mt-8 space-y-5"
         >
-
           <div>
             <label
               htmlFor="fullName"
@@ -1430,9 +1467,7 @@ if (submitted) {
               type="text"
               value={fullName}
               onChange={(event) =>
-                setFullName(
-                  event.target.value
-                )
+                setFullName(event.target.value)
               }
               required
               autoComplete="name"
@@ -1454,9 +1489,7 @@ if (submitted) {
               type="email"
               value={email}
               onChange={(event) =>
-                setEmail(
-                  event.target.value
-                )
+                setEmail(event.target.value)
               }
               required
               autoComplete="email"
@@ -1478,9 +1511,7 @@ if (submitted) {
               type="text"
               value={team}
               onChange={(event) =>
-                setTeam(
-                  event.target.value
-                )
+                setTeam(event.target.value)
               }
               required
               className="w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none transition focus:border-zinc-900"
@@ -1526,9 +1557,25 @@ if (submitted) {
               ? "Verifying..."
               : "Verify & Continue"}
           </button>
-
         </form>
       </div>
     </main>
+  );
+}
+export default function TestPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-zinc-50 px-6 py-12">
+          <div className="mx-auto flex min-h-[80vh] max-w-2xl items-center justify-center">
+            <p className="text-sm text-zinc-500">
+              Loading test...
+            </p>
+          </div>
+        </main>
+      }
+    >
+      <TestPageContent />
+    </Suspense>
   );
 }
