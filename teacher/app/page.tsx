@@ -1,3 +1,4 @@
+
 "use client";
 
 import Link from "next/link";
@@ -45,9 +46,12 @@ export default function Home() {
             </p>
           </div>
 
-          <div className="rounded-full bg-slate-100 px-4 py-2 text-sm font-medium text-slate-600">
-            Teacher
-          </div>
+          <Link
+            href="/login"
+            className="rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-700"
+          >
+            Đăng nhập
+          </Link>
         </div>
       </header>
 
