@@ -682,74 +682,176 @@ const attemptIdRef =
     }
 
     async function autoSubmitTest() {
-      if (autoSubmitRef.current) {
-        return;
-      }
+  if (autoSubmitRef.current) {
+    return;
+  }
 
-      autoSubmitRef.current = true;
-      setError("");
-      setSaving(true);
+  autoSubmitRef.current = true;
 
-      try {
-        const response = await fetch(
-          "/api/candidate/test-submit",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              attemptId,
-              autoSubmit: true,
-            }),
-          }
-        );
+  setError("");
+  setSaving(true);
 
-        const data = await response.json();
+  try {
+    /*
+     * IMPORTANT:
+     * Save the answer currently displayed on screen first.
+     *
+     * If the candidate has not answered the current question,
+     * we simply skip saving it.
+     *
+     * The test must still be submitted when time reaches 0.
+     */
 
-        if (!response.ok) {
-          console.error(
-            "Auto-submit failed:",
-            data.error
-          );
+    if (test) {
+      const question =
+        test.questions[currentQuestion];
 
-          autoSubmitRef.current = false;
+      if (question) {
+        const isWriting =
+          question.questionType === "writing";
 
-          setError(
-            data.error ||
-              "Unable to automatically submit the test."
-          );
+        const hasAnswer = isWriting
+          ? writingAnswer.trim().length > 0
+          : Boolean(selectedAnswer);
 
-          return;
+        if (hasAnswer) {
+          try {
+            const saveResponse = await fetch(
+              "/api/candidate/save-answer",
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  attemptId:
+                    test.attempt.id,
+
+                  attemptQuestionId:
+                    question.attemptQuestionId,
+
+                  selectedOptionId:
+                    isWriting
+                      ? null
+                      : selectedAnswer,
+
+                  answerText:
+                    isWriting
+                      ? writingAnswer
+                      : null,
+                }),
+                keepalive: true,
+              }
+            );
+
+            const saveData =
+              await saveResponse.json();
+
+            if (!saveResponse.ok) {
+  console.error(
+    "Auto-save current answer failed:",
+    saveData.error
+  );
+
+  autoSubmitRef.current = false;
+
+  setError(
+    "Unable to save your last answer before the test ended. Please contact your teacher."
+  );
+
+  return;
+}
+          } catch (saveError) {
+  console.error(
+    "Auto-save current answer request error:",
+    saveError
+  );
+
+  autoSubmitRef.current = false;
+
+  setError(
+    "Unable to save your last answer before the test ended. Please contact your teacher."
+  );
+
+  return;
+}
         }
-
-        try {
-          if (document.fullscreenElement) {
-            await document.exitFullscreen();
-          }
-        } catch (fullscreenError) {
-          console.warn(
-            "Unable to exit fullscreen:",
-            fullscreenError
-          );
-        }
-
-        router.push("/test?submitted=true");
-      } catch (requestError) {
-        console.error(
-          "Auto-submit request error:",
-          requestError
-        );
-
-        autoSubmitRef.current = false;
-
-        setError(
-          "Unable to automatically submit the test. Please contact your teacher."
-        );
-      } finally {
-        setSaving(false);
       }
     }
+
+    /*
+     * IMPORTANT:
+     * Submit the attempt regardless of whether
+     * the current question was answered.
+     */
+
+    const response = await fetch(
+      "/api/candidate/test-submit",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          attemptId,
+          autoSubmit: true,
+        }),
+        keepalive: true,
+      }
+    );
+
+    const data =
+      await response.json();
+
+    if (!response.ok) {
+      console.error(
+        "Auto-submit failed:",
+        data.error
+      );
+
+      autoSubmitRef.current = false;
+
+      setError(
+        data.error ||
+          "Unable to automatically submit the test."
+      );
+
+      return;
+    }
+
+    /*
+     * Exit fullscreen after submission.
+     */
+
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      }
+    } catch (fullscreenError) {
+      console.warn(
+        "Unable to exit fullscreen:",
+        fullscreenError
+      );
+    }
+
+    router.push(
+      "/test?submitted=true"
+    );
+  } catch (requestError) {
+    console.error(
+      "Auto-submit request error:",
+      requestError
+    );
+
+    autoSubmitRef.current = false;
+
+    setError(
+      "Unable to automatically submit the test. Please contact your teacher."
+    );
+  } finally {
+    setSaving(false);
+  }
+}
 
     const timer = window.setInterval(() => {
       const seconds =
@@ -771,6 +873,90 @@ const attemptIdRef =
     test?.attempt.expiresAt,
     router,
   ]);
+
+  async function saveCurrentAnswerForAutoSubmit() {
+  if (!test) {
+    return true;
+  }
+
+  const question =
+    test.questions[currentQuestion];
+
+  if (!question) {
+    return true;
+  }
+
+  const isWriting =
+    question.questionType === "writing";
+
+  // Nếu chưa trả lời câu hiện tại thì không có gì để lưu.
+  // Hết giờ vẫn phải submit bài.
+  if (
+    isWriting &&
+    !writingAnswer.trim()
+  ) {
+    return true;
+  }
+
+  if (
+    !isWriting &&
+    !selectedAnswer
+  ) {
+    return true;
+  }
+
+  try {
+    const response = await fetch(
+      "/api/candidate/save-answer",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+        body: JSON.stringify({
+          attemptId:
+            test.attempt.id,
+
+          attemptQuestionId:
+            question.attemptQuestionId,
+
+          selectedOptionId:
+            isWriting
+              ? null
+              : selectedAnswer,
+
+          answerText:
+            isWriting
+              ? writingAnswer
+              : null,
+        }),
+        keepalive: true,
+      }
+    );
+
+    const data =
+      await response.json();
+
+    if (!response.ok) {
+      console.error(
+        "Auto-save current answer failed:",
+        data.error
+      );
+
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error(
+      "Auto-save current answer request error:",
+      error
+    );
+
+    return false;
+  }
+}
 
   async function saveCurrentAnswer() {
     if (!test) {
