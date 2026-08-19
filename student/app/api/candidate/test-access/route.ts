@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { normalizeName } from "@/lib/normalize";
 
 export async function POST(request: Request) {
   try {
@@ -70,15 +72,12 @@ export async function POST(request: Request) {
     }
 
     // Verify candidate information
-    if (
-      candidate.full_name.trim().toLowerCase() !==
-      fullName.toLowerCase()
-    ) {
-      return NextResponse.json(
-        { error: "Full name does not match the registered information." },
-        { status: 401 }
-      );
-    }
+    if (normalizeName(candidate.full_name) !== normalizeName(fullName)) {
+  return NextResponse.json(
+    { error: "Full name does not match the registered information." },
+    { status: 401 }
+  );
+}
 
     if (
       (candidate.team ?? "").trim().toLowerCase() !==

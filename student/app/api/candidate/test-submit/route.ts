@@ -1,15 +1,22 @@
 import { NextResponse } from "next/server";
+
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
 
-    const attemptId = String(body.attemptId ?? "").trim();
+    const attemptId =
+      String(body.attemptId ?? "").trim();
+
+    const autoSubmit =
+      body.autoSubmit === true;
 
     if (!attemptId) {
       return NextResponse.json(
-        { error: "Attempt ID is required." },
+        {
+          error: "Attempt ID is required.",
+        },
         { status: 400 }
       );
     }
@@ -18,22 +25,29 @@ export async function POST(request: Request) {
     // 1. Verify attempt
     // ---------------------------------------------------------
 
-    const { data: attempt, error: attemptError } =
-      await supabaseAdmin
-        .from("test_attempts")
-        .select(`
-          id,
-          status,
-          expires_at
-        `)
-        .eq("id", attemptId)
-        .single();
+    const {
+      data: attempt,
+      error: attemptError,
+    } = await supabaseAdmin
+      .from("test_attempts")
+      .select(`
+        id,
+        status,
+        expires_at
+      `)
+      .eq("id", attemptId)
+      .single();
 
     if (attemptError || !attempt) {
-      console.error("Attempt lookup error:", attemptError);
+      console.error(
+        "Attempt lookup error:",
+        attemptError
+      );
 
       return NextResponse.json(
-        { error: "Test attempt not found." },
+        {
+          error: "Test attempt not found.",
+        },
         { status: 404 }
       );
     }
@@ -43,26 +57,56 @@ export async function POST(request: Request) {
       attempt.status !== "started"
     ) {
       return NextResponse.json(
-        { error: "This test attempt cannot be submitted." },
+        {
+          error:
+            "This test attempt cannot be submitted.",
+        },
         { status: 409 }
       );
     }
 
     // ---------------------------------------------------------
-    // 2. Get all attempt questions
+    // 2. Check expiration
     // ---------------------------------------------------------
 
-    const { data: attemptQuestions, error: questionsError } =
-      await supabaseAdmin
-        .from("attempt_questions")
-        .select(`
-          id,
-          question_id,
-          writing_task_id,
-          question_number
-        `)
-        .eq("attempt_id", attemptId)
-        .order("question_number", { ascending: true });
+    const isExpired =
+      attempt.expires_at &&
+      new Date(attempt.expires_at).getTime() <=
+        Date.now();
+
+    /*
+     * If the attempt has expired, it can only be
+     * submitted as an automatic timeout submission.
+     */
+    if (isExpired && !autoSubmit) {
+      return NextResponse.json(
+        {
+          error:
+            "The test time has expired. The test must be submitted automatically.",
+        },
+        { status: 409 }
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 3. Get all attempt questions
+    // ---------------------------------------------------------
+
+    const {
+      data: attemptQuestions,
+      error: questionsError,
+    } = await supabaseAdmin
+      .from("attempt_questions")
+      .select(`
+        id,
+        question_id,
+        writing_task_id,
+        question_number
+      `)
+      .eq("attempt_id", attemptId)
+      .order("question_number", {
+        ascending: true,
+      });
 
     if (questionsError) {
       console.error(
@@ -71,39 +115,54 @@ export async function POST(request: Request) {
       );
 
       return NextResponse.json(
-        { error: "Unable to load test questions." },
+        {
+          error:
+            "Unable to load test questions.",
+        },
         { status: 500 }
       );
     }
 
-    if (!attemptQuestions || attemptQuestions.length === 0) {
+    if (
+      !attemptQuestions ||
+      attemptQuestions.length === 0
+    ) {
       return NextResponse.json(
-        { error: "No test questions found for this attempt." },
+        {
+          error:
+            "No test questions found for this attempt.",
+        },
         { status: 400 }
       );
     }
 
     // ---------------------------------------------------------
-    // 3. Get all saved answers
+    // 4. Get all saved answers
     // ---------------------------------------------------------
 
-    const attemptQuestionIds = attemptQuestions.map(
-      (question) => question.id
-    );
+    const attemptQuestionIds =
+      attemptQuestions.map(
+        (question) => question.id
+      );
 
-    const { data: answers, error: answersError } =
-      await supabaseAdmin
-        .from("attempt_answers")
-        .select(`
-          id,
-          attempt_question_id,
-          selected_option_id,
-          answer_text,
-          is_correct,
-          points_earned,
-          answered_at
-        `)
-        .in("attempt_question_id", attemptQuestionIds);
+    const {
+      data: answers,
+      error: answersError,
+    } = await supabaseAdmin
+      .from("attempt_answers")
+      .select(`
+        id,
+        attempt_question_id,
+        selected_option_id,
+        answer_text,
+        is_correct,
+        points_earned,
+        answered_at
+      `)
+      .in(
+        "attempt_question_id",
+        attemptQuestionIds
+      );
 
     if (answersError) {
       console.error(
@@ -112,7 +171,10 @@ export async function POST(request: Request) {
       );
 
       return NextResponse.json(
-        { error: "Unable to load test answers." },
+        {
+          error:
+            "Unable to load test answers.",
+        },
         { status: 500 }
       );
     }
@@ -124,19 +186,25 @@ export async function POST(request: Request) {
       ])
     );
 
-    // ---------------------------------------------------------
-    // 4. Make sure every question has an answer
-    // ---------------------------------------------------------
+    
+// ---------------------------------------------------------
+// 5. Normal submission requires all questions answered
+// ---------------------------------------------------------
 
-    const unansweredQuestions = attemptQuestions.filter(
+if (!autoSubmit) {
+  const unansweredQuestions =
+    attemptQuestions.filter(
       (question) => {
-        const answer = answerMap.get(question.id);
+        const answer =
+          answerMap.get(question.id);
 
         if (!answer) {
           return true;
         }
 
-        if (question.writing_task_id) {
+        if (
+          question.writing_task_id
+        ) {
           return !answer.answer_text?.trim();
         }
 
@@ -144,42 +212,62 @@ export async function POST(request: Request) {
       }
     );
 
-    if (unansweredQuestions.length > 0) {
-      return NextResponse.json(
-        {
-          error:
-            "Please answer all questions before submitting the test.",
-          unansweredCount: unansweredQuestions.length,
-        },
-        { status: 400 }
-      );
-    }
-
-    // ---------------------------------------------------------
-    // 5. Grade MCQ answers
-    // ---------------------------------------------------------
-
-    const mcqQuestions = attemptQuestions.filter(
-      (question) => question.question_id
+  if (
+    unansweredQuestions.length > 0
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "Please answer all questions before submitting the test.",
+        unansweredCount:
+          unansweredQuestions.length,
+      },
+      { status: 400 }
     );
+  }
+}
+
+    // ---------------------------------------------------------
+    // 6. Grade MCQ answers
+    // ---------------------------------------------------------
+
+    const mcqQuestions =
+      attemptQuestions.filter(
+        (question) =>
+          question.question_id
+      );
 
     let totalScore = 0;
 
     for (const question of mcqQuestions) {
-      const answer = answerMap.get(question.id);
+      const answer =
+        answerMap.get(question.id);
 
-      if (!answer || !answer.selected_option_id) {
+      /*
+       * During auto-submit, unanswered
+       * questions simply receive 0 points.
+       */
+      if (
+        !answer ||
+        !answer.selected_option_id
+      ) {
         continue;
       }
 
-      const { data: questionAnswer, error: questionAnswerError } =
-        await supabaseAdmin
-          .from("question_answers")
-          .select(`
-            correct_option_id
-          `)
-          .eq("question_id", question.question_id)
-          .maybeSingle();
+      const {
+        data: questionAnswer,
+        error:
+          questionAnswerError,
+      } = await supabaseAdmin
+        .from("question_answers")
+        .select(`
+          correct_option_id
+        `)
+        .eq(
+          "question_id",
+          question.question_id
+        )
+        .maybeSingle();
 
       if (questionAnswerError) {
         console.error(
@@ -188,7 +276,10 @@ export async function POST(request: Request) {
         );
 
         return NextResponse.json(
-          { error: "Unable to grade test answers." },
+          {
+            error:
+              "Unable to grade test answers.",
+          },
           { status: 500 }
         );
       }
@@ -212,18 +303,21 @@ export async function POST(request: Request) {
         answer.selected_option_id ===
         questionAnswer.correct_option_id;
 
-      const pointsEarned = isCorrect ? 1 : 0;
+      const pointsEarned =
+        isCorrect ? 1 : 0;
 
       totalScore += pointsEarned;
 
-      const { error: answerUpdateError } =
-        await supabaseAdmin
-          .from("attempt_answers")
-          .update({
-            is_correct: isCorrect,
-            points_earned: pointsEarned,
-          })
-          .eq("id", answer.id);
+      const {
+        error: answerUpdateError,
+      } = await supabaseAdmin
+        .from("attempt_answers")
+        .update({
+          is_correct: isCorrect,
+          points_earned:
+            pointsEarned,
+        })
+        .eq("id", answer.id);
 
       if (answerUpdateError) {
         console.error(
@@ -232,24 +326,30 @@ export async function POST(request: Request) {
         );
 
         return NextResponse.json(
-          { error: "Unable to save test score." },
+          {
+            error:
+              "Unable to save test score.",
+          },
           { status: 500 }
         );
       }
     }
 
     // ---------------------------------------------------------
-    // 6. Save Writing response
+    // 7. Save Writing response
     // ---------------------------------------------------------
 
-    const writingQuestion = attemptQuestions.find(
-      (question) => question.writing_task_id
-    );
+    const writingQuestion =
+      attemptQuestions.find(
+        (question) =>
+          question.writing_task_id
+      );
 
     if (writingQuestion) {
-      const writingAnswer = answerMap.get(
-        writingQuestion.id
-      );
+      const writingAnswer =
+        answerMap.get(
+          writingQuestion.id
+        );
 
       if (
         writingAnswer &&
@@ -258,38 +358,57 @@ export async function POST(request: Request) {
         const responseText =
           writingAnswer.answer_text.trim();
 
-        const wordCount = responseText
-          .split(/\s+/)
-          .filter(Boolean).length;
+        const wordCount =
+          responseText
+            .split(/\s+/)
+            .filter(Boolean)
+            .length;
 
-        const now = new Date().toISOString();
+        const now =
+          new Date().toISOString();
 
-        const { data: existingWritingResponse } =
-          await supabaseAdmin
-            .from("writing_responses")
-            .select("id")
-            .eq("attempt_id", attemptId)
-            .maybeSingle();
+        const {
+          data:
+            existingWritingResponse,
+        } = await supabaseAdmin
+          .from("writing_responses")
+          .select("id")
+          .eq(
+            "attempt_id",
+            attemptId
+          )
+          .maybeSingle();
 
-        if (existingWritingResponse) {
-          const { error: writingUpdateError } =
-            await supabaseAdmin
-              .from("writing_responses")
-              .update({
-                writing_task_id:
-                  writingQuestion.writing_task_id,
-                response_text: responseText,
-                word_count: wordCount,
-                submitted_at: now,
-                grading_status: "pending",
-                updated_at: now,
-              })
-              .eq(
-                "id",
-                existingWritingResponse.id
-              );
+        if (
+          existingWritingResponse
+        ) {
+          const {
+            error:
+              writingUpdateError,
+          } = await supabaseAdmin
+            .from(
+              "writing_responses"
+            )
+            .update({
+              writing_task_id:
+                writingQuestion.writing_task_id,
+              response_text:
+                responseText,
+              word_count:
+                wordCount,
+              submitted_at: now,
+              grading_status:
+                "pending",
+              updated_at: now,
+            })
+            .eq(
+              "id",
+              existingWritingResponse.id
+            );
 
-          if (writingUpdateError) {
+          if (
+            writingUpdateError
+          ) {
             console.error(
               "Writing response update error:",
               writingUpdateError
@@ -304,20 +423,30 @@ export async function POST(request: Request) {
             );
           }
         } else {
-          const { error: writingInsertError } =
-            await supabaseAdmin
-              .from("writing_responses")
-              .insert({
-                attempt_id: attemptId,
-                writing_task_id:
-                  writingQuestion.writing_task_id,
-                response_text: responseText,
-                word_count: wordCount,
-                submitted_at: now,
-                grading_status: "pending",
-              });
+          const {
+            error:
+              writingInsertError,
+          } = await supabaseAdmin
+            .from(
+              "writing_responses"
+            )
+            .insert({
+              attempt_id:
+                attemptId,
+              writing_task_id:
+                writingQuestion.writing_task_id,
+              response_text:
+                responseText,
+              word_count:
+                wordCount,
+              submitted_at: now,
+              grading_status:
+                "pending",
+            });
 
-          if (writingInsertError) {
+          if (
+            writingInsertError
+          ) {
             console.error(
               "Writing response insert error:",
               writingInsertError
@@ -336,80 +465,114 @@ export async function POST(request: Request) {
     }
 
     // ---------------------------------------------------------
-    // 7. Calculate final MCQ result
+    // 8. Calculate final MCQ result
     // ---------------------------------------------------------
 
-    const maxScore = mcqQuestions.length;
+    const maxScore =
+      mcqQuestions.length;
 
     const percentage =
       maxScore > 0
         ? Number(
-            ((totalScore / maxScore) * 100).toFixed(2)
+            (
+              (totalScore /
+                maxScore) *
+              100
+            ).toFixed(2)
           )
         : 0;
 
     // ---------------------------------------------------------
-    // 8. Finalize attempt
+    // 9. Finalize attempt
     // ---------------------------------------------------------
 
     const submittedAt =
       new Date().toISOString();
 
-    const { data: submittedAttempt, error: updateError } =
-      await supabaseAdmin
-        .from("test_attempts")
-        .update({
-          status: "submitted",
-          submitted_at: submittedAt,
-          total_score: totalScore,
-          max_score: maxScore,
-          percentage,
-          updated_at: submittedAt,
-        })
-        .eq("id", attemptId)
-        .select(`
-          id,
-          status,
-          submitted_at,
-          total_score,
-          max_score,
-          percentage
-        `)
-        .single();
+    const {
+      data: submittedAttempt,
+      error: updateError,
+    } = await supabaseAdmin
+      .from("test_attempts")
+      .update({
+        status: "submitted",
+        submitted_at:
+          submittedAt,
+        total_score:
+          totalScore,
+        max_score:
+          maxScore,
+        percentage,
+        updated_at:
+          submittedAt,
+      })
+      .eq("id", attemptId)
+      .select(`
+        id,
+        status,
+        submitted_at,
+        total_score,
+        max_score,
+        percentage
+      `)
+      .single();
 
-    if (updateError || !submittedAttempt) {
+    if (
+      updateError ||
+      !submittedAttempt
+    ) {
       console.error(
         "Test submit update error:",
         updateError
       );
 
       return NextResponse.json(
-        { error: "Unable to finalize the test." },
+        {
+          error:
+            "Unable to finalize the test.",
+        },
         { status: 500 }
       );
     }
 
     // ---------------------------------------------------------
-    // 9. Return result
+    // 10. Return result
     // ---------------------------------------------------------
 
     return NextResponse.json({
       success: true,
-      message: "Test submitted successfully.",
+      message:
+        autoSubmit
+          ? "Test automatically submitted because the time limit was reached."
+          : "Test submitted successfully.",
       result: {
-        attemptId: submittedAttempt.id,
-        status: submittedAttempt.status,
-        submittedAt: submittedAttempt.submitted_at,
-        totalScore: submittedAttempt.total_score,
-        maxScore: submittedAttempt.max_score,
-        percentage: submittedAttempt.percentage,
+        attemptId:
+          submittedAttempt.id,
+        status:
+          submittedAttempt.status,
+        submittedAt:
+          submittedAttempt.submitted_at,
+        totalScore:
+          submittedAttempt.total_score,
+        maxScore:
+          submittedAttempt.max_score,
+        percentage:
+          submittedAttempt.percentage,
+        autoSubmitted:
+          autoSubmit,
       },
     });
   } catch (error) {
-    console.error("Test submit error:", error);
+    console.error(
+      "Test submit error:",
+      error
+    );
 
     return NextResponse.json(
-      { error: "Unexpected server error." },
+      {
+        error:
+          "Unexpected server error.",
+      },
       { status: 500 }
     );
   }
