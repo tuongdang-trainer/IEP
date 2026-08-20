@@ -115,6 +115,13 @@ type Event = {
   metadata: Record<string, unknown> | null;
 };
 
+type AntiCheatingIncident = {
+  id: string;
+  occurred_at: string;
+  event_types: string[];
+  metadata: Record<string, unknown>[];
+};
+
 type ResultData = {
   attempt: Attempt;
   attemptQuestions: AttemptQuestion[];
@@ -130,6 +137,80 @@ type WritingDraft = {
   score: string;
   feedback: string;
 };
+
+const INCIDENT_WINDOW_MS = 3000;
+
+function groupAntiCheatingEvents(
+  events: Event[]
+): AntiCheatingIncident[] {
+  const relevantEvents = events
+    .filter(
+      (event) =>
+        event.event_type !== "focus" &&
+        event.event_type !== "test_started" &&
+        event.event_type !== "test_submitted"
+    )
+    .sort(
+      (a, b) =>
+        new Date(a.occurred_at).getTime() -
+        new Date(b.occurred_at).getTime()
+    );
+
+  const incidents: AntiCheatingIncident[] = [];
+
+  for (const event of relevantEvents) {
+    const eventTime = new Date(event.occurred_at).getTime();
+    const lastIncident = incidents[incidents.length - 1];
+
+    if (!lastIncident) {
+      incidents.push({
+        id: event.id,
+        occurred_at: event.occurred_at,
+        event_types: [event.event_type],
+        metadata: event.metadata ? [event.metadata] : [],
+      });
+      continue;
+    }
+
+    const lastEventTime = new Date(
+      lastIncident.occurred_at
+    ).getTime();
+
+    const isWithinIncidentWindow =
+      eventTime - lastEventTime <= INCIDENT_WINDOW_MS;
+
+    const isWindowSwitchEvent =
+      event.event_type === "blur" ||
+      event.event_type === "tab_switch";
+
+    const lastIncidentHasWindowSwitch =
+      lastIncident.event_types.includes("blur") ||
+      lastIncident.event_types.includes("tab_switch");
+
+    if (
+      isWithinIncidentWindow &&
+      isWindowSwitchEvent &&
+      lastIncidentHasWindowSwitch
+    ) {
+      lastIncident.event_types.push(event.event_type);
+
+      if (event.metadata) {
+        lastIncident.metadata.push(event.metadata);
+      }
+
+      continue;
+    }
+
+    incidents.push({
+      id: event.id,
+      occurred_at: event.occurred_at,
+      event_types: [event.event_type],
+      metadata: event.metadata ? [event.metadata] : [],
+    });
+  }
+
+  return incidents.reverse();
+}
 
 export default function ResultDetailPage() {
   const params = useParams<{ attemptId: string }>();
@@ -243,6 +324,41 @@ export default function ResultDetailPage() {
       minute: "2-digit",
     }).format(new Date(date));
   }
+
+  const incidents = data
+  ? groupAntiCheatingEvents(data.events)
+  : [];
+
+const incidentCounts = incidents.reduce(
+  (counts, incident) => {
+    if (
+      incident.event_types.includes("tab_switch") ||
+      incident.event_types.includes("blur")
+    ) {
+      counts.tabSwitch += 1;
+    }
+
+    if (incident.event_types.includes("copy")) {
+      counts.copy += 1;
+    }
+
+    if (incident.event_types.includes("paste")) {
+      counts.paste += 1;
+    }
+
+    if (incident.event_types.includes("fullscreen_exit")) {
+      counts.fullscreenExit += 1;
+    }
+
+    return counts;
+  },
+  {
+    tabSwitch: 0,
+    copy: 0,
+    paste: 0,
+    fullscreenExit: 0,
+  }
+);
 
   function formatPercentage(value: number | null) {
     if (value === null || value === undefined) {
@@ -545,7 +661,6 @@ export default function ResultDetailPage() {
   attempt,
   writingTasks,
   writingResponses,
-  events,
 } = data;
 
   const sections = ["A1", "A2", "B1", "B2"].map((level) => ({
@@ -1223,167 +1338,371 @@ export default function ResultDetailPage() {
               )}
             </section>
 
-            {/* Anti-Cheating */}
+                        {/* Anti-Cheating */}
 
-<section className="mt-8 rounded-xl border border-slate-200 bg-white">
-  <div className="border-b border-slate-200 px-6 py-5">
-    <h2 className="font-semibold text-slate-900">
-      Anti-Cheating Report
-    </h2>
+            <section className="mt-8 rounded-xl border border-slate-200 bg-white">
+              <div className="border-b border-slate-200 px-6 py-5">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <h2 className="font-semibold text-slate-900">
+                      Anti-Cheating
+                    </h2>
 
-    <p className="mt-1 text-sm text-slate-500">
-      Recorded test activity for teacher review. This report provides
-      evidence only and does not determine whether cheating occurred.
-    </p>
-  </div>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Review recorded anti-cheating events during the test.
+                    </p>
+                  </div>
 
-  {/* Activity Summary */}
-
-  <div className="grid gap-4 px-6 py-6 sm:grid-cols-2 lg:grid-cols-6">
-    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-        Flagged
-      </p>
-
-      <p className="mt-2 font-semibold text-slate-900">
-        {attempt.is_suspicious ? "Yes" : "No"}
-      </p>
-    </div>
-
-    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-        Tab switches
-      </p>
-
-      <p className="mt-2 text-xl font-semibold text-slate-900">
-        {attempt.tab_switch_count ?? 0}
-      </p>
-    </div>
-
-    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-        Window blur
-      </p>
-
-      <p className="mt-2 text-xl font-semibold text-slate-900">
-        {attempt.blur_count ?? 0}
-      </p>
-    </div>
-
-    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-        Copy
-      </p>
-
-      <p className="mt-2 text-xl font-semibold text-slate-900">
-        {attempt.copy_count ?? 0}
-      </p>
-    </div>
-
-    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-        Paste
-      </p>
-
-      <p className="mt-2 text-xl font-semibold text-slate-900">
-        {attempt.paste_count ?? 0}
-      </p>
-    </div>
-
-    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-        Fullscreen exits
-      </p>
-
-      <p className="mt-2 text-xl font-semibold text-slate-900">
-        {attempt.fullscreen_exit_count ?? 0}
-      </p>
-    </div>
-  </div>
-
-  {/* Activity Timeline */}
-
-  <div className="border-t border-slate-200 px-6 py-6">
-    <div>
-      <h3 className="text-sm font-semibold text-slate-900">
-        Activity Timeline
-      </h3>
-
-      <p className="mt-1 text-xs text-slate-500">
-        All recorded events for this test attempt.
-      </p>
-    </div>
-
-    {events.length === 0 ? (
-      <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 px-5 py-6 text-center">
-        <p className="text-sm text-slate-500">
-          No anti-cheating events were recorded.
-        </p>
-      </div>
-    ) : (
-      <div className="mt-5 overflow-hidden rounded-lg border border-slate-200">
-        <div className="grid grid-cols-[180px_1fr] border-b border-slate-200 bg-slate-50 px-5 py-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-            Time
-          </p>
-
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-            Activity
-          </p>
-        </div>
-
-        <div className="divide-y divide-slate-100">
-          {events.map((event) => {
-            const eventLabels: Record<string, string> = {
-              tab_switch: "Tab switched",
-              tab_switch_count: "Tab switch",
-              blur: "Window blurred",
-              focus: "Window focused",
-              copy: "Copy detected",
-              paste: "Paste detected",
-              fullscreen_exit: "Fullscreen exited",
-              fullscreen_enter: "Fullscreen entered",
-              test_started: "Test started",
-              test_submitted: "Test submitted",
-            };
-
-            const label =
-              eventLabels[event.event_type] ??
-              event.event_type
-                .replace(/_/g, " ")
-                .replace(/\b\w/g, (char) => char.toUpperCase());
-
-            return (
-              <div
-                key={event.id}
-                className="grid grid-cols-[180px_1fr] gap-4 px-5 py-4"
-              >
-                <span className="text-xs text-slate-400">
-                  {formatDate(event.occurred_at)}
-                </span>
-
-                <div>
-                  <p className="text-sm font-medium text-slate-700">
-                    {label}
-                  </p>
-
-                  {event.metadata &&
-                    Object.keys(event.metadata).length > 0 && (
-                      <div className="mt-2 rounded-md bg-slate-50 px-3 py-2">
-                        <pre className="whitespace-pre-wrap break-words text-xs leading-5 text-slate-500">
-                          {JSON.stringify(event.metadata, null, 2)}
-                        </pre>
-                      </div>
-                    )}
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                        attempt.is_suspicious
+                          ? "bg-red-50 text-red-700"
+                          : "bg-green-50 text-green-700"
+                      }`}
+                    >
+                      {attempt.is_suspicious
+                        ? "Suspicious activity detected"
+                        : "No suspicious activity flagged"}
+                    </span>
+                  </div>
                 </div>
               </div>
-            );
-          })}
-        </div>
-      </div>
-    )}
-  </div>
-</section>
+
+              {/* Summary */}
+
+              <div className="grid gap-4 border-b border-slate-200 px-6 py-6 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Tab / Window Switch
+                  </p>
+
+                  <p className="mt-2 text-2xl font-semibold text-slate-900">
+                    {incidentCounts.tabSwitch}
+                  </p>
+
+                  <p className="mt-1 text-xs text-slate-500">
+                    Recorded incidents
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Copy
+                  </p>
+
+                  <p className="mt-2 text-2xl font-semibold text-slate-900">
+                    {incidentCounts.copy}
+                  </p>
+
+                  <p className="mt-1 text-xs text-slate-500">
+                    Recorded incidents
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Paste
+                  </p>
+
+                  <p className="mt-2 text-2xl font-semibold text-slate-900">
+                    {incidentCounts.paste}
+                  </p>
+
+                  <p className="mt-1 text-xs text-slate-500">
+                    Recorded incidents
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Fullscreen Exit
+                  </p>
+
+                  <p className="mt-2 text-2xl font-semibold text-slate-900">
+                    {incidentCounts.fullscreenExit}
+                  </p>
+
+                  <p className="mt-1 text-xs text-slate-500">
+                    Recorded incidents
+                  </p>
+                </div>
+              </div>
+
+              {/* Event counters from attempt */}
+
+              <div className="grid gap-4 border-b border-slate-200 px-6 py-6 sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Tab Switch Count
+                  </p>
+
+                  <p className="mt-1 text-lg font-semibold text-slate-900">
+                    {attempt.tab_switch_count}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Blur Count
+                  </p>
+
+                  <p className="mt-1 text-lg font-semibold text-slate-900">
+                    {attempt.blur_count}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Copy Count
+                  </p>
+
+                  <p className="mt-1 text-lg font-semibold text-slate-900">
+                    {attempt.copy_count}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Paste Count
+                  </p>
+
+                  <p className="mt-1 text-lg font-semibold text-slate-900">
+                    {attempt.paste_count}
+                  </p>
+                </div>
+              </div>
+
+              {/* Fullscreen */}
+
+              <div className="border-b border-slate-200 px-6 py-5">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                      Fullscreen Exits
+                    </p>
+
+                    <p className="mt-1 text-sm text-slate-600">
+                      Number of times the candidate exited fullscreen mode.
+                    </p>
+                  </div>
+
+                  <p className="text-lg font-semibold text-slate-900">
+                    {attempt.fullscreen_exit_count}
+                  </p>
+                </div>
+              </div>
+
+              {/* Incident list */}
+
+              <div>
+                <div className="border-b border-slate-200 px-6 py-5">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Incident Log
+                  </h3>
+
+                  <p className="mt-1 text-xs text-slate-500">
+                    Events occurring within a short window are grouped
+                    together when appropriate.
+                  </p>
+                </div>
+
+                {incidents.length === 0 ? (
+                  <div className="px-6 py-10 text-center">
+                    <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-50">
+                      <span className="text-xl text-green-600">
+                        ✓
+                      </span>
+                    </div>
+
+                    <p className="mt-4 text-sm font-medium text-slate-900">
+                      No anti-cheating incidents recorded
+                    </p>
+
+                    <p className="mt-1 text-xs text-slate-500">
+                      No tab switches, copy/paste actions, or fullscreen
+                      exits were recorded for this attempt.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-200">
+                    {incidents.map((incident, index) => {
+                      const hasWindowSwitch =
+                        incident.event_types.includes("tab_switch") ||
+                        incident.event_types.includes("blur");
+
+                      const hasCopy =
+                        incident.event_types.includes("copy");
+
+                      const hasPaste =
+                        incident.event_types.includes("paste");
+
+                      const hasFullscreenExit =
+                        incident.event_types.includes(
+                          "fullscreen_exit"
+                        );
+
+                      return (
+                        <div
+                          key={incident.id}
+                          className="px-6 py-5"
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-4">
+                            <div className="flex min-w-0 items-start gap-4">
+                              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-600">
+                                {incidents.length - index}
+                              </div>
+
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap gap-2">
+                                  {hasWindowSwitch && (
+                                    <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
+                                      Window / Tab Switch
+                                    </span>
+                                  )}
+
+                                  {hasCopy && (
+                                    <span className="rounded-full bg-orange-50 px-2.5 py-1 text-xs font-medium text-orange-700">
+                                      Copy
+                                    </span>
+                                  )}
+
+                                  {hasPaste && (
+                                    <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
+                                      Paste
+                                    </span>
+                                  )}
+
+                                  {hasFullscreenExit && (
+                                    <span className="rounded-full bg-purple-50 px-2.5 py-1 text-xs font-medium text-purple-700">
+                                      Fullscreen Exit
+                                    </span>
+                                  )}
+
+                                  {incident.event_types
+                                    .filter(
+                                      (eventType) =>
+                                        ![
+                                          "tab_switch",
+                                          "blur",
+                                          "copy",
+                                          "paste",
+                                          "fullscreen_exit",
+                                        ].includes(eventType)
+                                    )
+                                    .map((eventType) => (
+                                      <span
+                                        key={eventType}
+                                        className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600"
+                                      >
+                                        {eventType}
+                                      </span>
+                                    ))}
+                                </div>
+
+                                <p className="mt-2 text-sm text-slate-700">
+                                  {incident.event_types
+                                    .map((eventType) =>
+                                      eventType.replaceAll("_", " ")
+                                    )
+                                    .join(" + ")}
+                                </p>
+
+                                {incident.metadata.length > 0 && (
+                                  <details className="mt-3">
+                                    <summary className="cursor-pointer text-xs font-medium text-slate-500 hover:text-slate-700">
+                                      View event details
+                                    </summary>
+
+                                    <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                                      <pre className="overflow-x-auto whitespace-pre-wrap text-xs leading-5 text-slate-600">
+                                        {JSON.stringify(
+                                          incident.metadata,
+                                          null,
+                                          2
+                                        )}
+                                      </pre>
+                                    </div>
+                                  </details>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="shrink-0 text-right">
+                              <p className="text-xs font-medium text-slate-400">
+                                Recorded
+                              </p>
+
+                              <p className="mt-1 text-sm text-slate-700">
+                                {formatDate(incident.occurred_at)}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Attempt timing */}
+
+            <section className="mt-8 rounded-xl border border-slate-200 bg-white">
+              <div className="border-b border-slate-200 px-6 py-5">
+                <h2 className="font-semibold text-slate-900">
+                  Attempt Timing
+                </h2>
+              </div>
+
+              <div className="grid gap-6 px-6 py-6 sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Started
+                  </p>
+
+                  <p className="mt-1 text-sm text-slate-700">
+                    {formatDate(attempt.started_at)}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Submitted
+                  </p>
+
+                  <p className="mt-1 text-sm text-slate-700">
+                    {formatDate(attempt.submitted_at)}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Duration
+                  </p>
+
+                  <p className="mt-1 text-sm text-slate-700">
+                    {attempt.duration_seconds !== null
+                      ? `${Math.floor(
+                          attempt.duration_seconds / 60
+                        )} min ${
+                          attempt.duration_seconds % 60
+                        } sec`
+                      : "—"}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Attempt Status
+                  </p>
+
+                  <p className="mt-1 text-sm font-medium capitalize text-slate-700">
+                    {attempt.status}
+                  </p>
+                </div>
+              </div>
+            </section>
           </div>
         </main>
       </div>
