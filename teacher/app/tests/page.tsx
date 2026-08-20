@@ -22,8 +22,12 @@ type TestForm = {
   title: string;
   description: string;
   duration_minutes: string;
-  total_questions: string;
   passing_score: string;
+  A1: string;
+  A2: string;
+  B1: string;
+  B2: string;
+  Writing: string;
 };
 
 type ApiResponse = {
@@ -37,8 +41,12 @@ const EMPTY_FORM: TestForm = {
   title: "",
   description: "",
   duration_minutes: "45",
-  total_questions: "46",
   passing_score: "",
+  A1: "12",
+  A2: "12",
+  B1: "12",
+  B2: "9",
+  Writing: "1",
 };
 
 export default function TestsPage() {
@@ -163,9 +171,20 @@ export default function TestsPage() {
         form.duration_minutes
       );
 
-      const totalQuestions = Number(
-        form.total_questions
-      );
+      const sectionCounts = {
+        A1: Number(form.A1),
+        A2: Number(form.A2),
+        B1: Number(form.B1),
+        B2: Number(form.B2),
+        Writing: Number(form.Writing),
+      };
+
+      const totalQuestions =
+        sectionCounts.A1 +
+        sectionCounts.A2 +
+        sectionCounts.B1 +
+        sectionCounts.B2 +
+        sectionCounts.Writing;
 
       const passingScore =
         form.passing_score.trim()
@@ -243,14 +262,48 @@ export default function TestsPage() {
         );
       }
 
-      setSuccess(
-        "Test created successfully."
-      );
+      const createdTest = result.test;
 
-      setForm(EMPTY_FORM);
-      setShowForm(false);
+if (!createdTest?.id) {
+  throw new Error(
+    "Test was created but its ID was not returned."
+  );
+}
 
-      await loadTests();
+const sectionResponse = await fetch(
+  `/api/tests/${createdTest.id}/sections`,
+  {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization:
+        `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      sections: sectionCounts,
+    }),
+  }
+);
+
+const sectionResult =
+  await sectionResponse.json();
+
+if (!sectionResponse.ok) {
+  throw new Error(
+    sectionResult.error ||
+      sectionResult.details ||
+      "Test was created, but question distribution could not be saved."
+  );
+}
+
+setSuccess(
+  "Test created successfully."
+);
+
+setForm(EMPTY_FORM);
+setShowForm(false);
+
+await loadTests();
     } catch (err) {
       console.error(
         "Create test error:",
@@ -464,38 +517,74 @@ export default function TestsPage() {
                   />
                 </div>
 
-                <div>
-                  <label
-                    htmlFor="total-questions"
-                    className="mb-1.5 block text-sm font-medium text-slate-700"
-                  >
-                    Total Questions
-                  </label>
+<div className="md:col-span-2">
+  <label className="mb-1.5 block text-sm font-medium text-slate-700">
+    Question Distribution
+  </label>
 
-                  <input
-                    id="total-questions"
-                    type="number"
-                    min="1"
-                    value={
-                      form.total_questions
-                    }
-                    onChange={(event) =>
-                      updateForm(
-                        "total_questions",
-                        event.target.value
-                      )
-                    }
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-400"
-                  />
-                </div>
+  <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+    {(["A1", "A2", "B1", "B2", "Writing"] as const).map(
+      (section) => (
+        <div key={section}>
+          <label
+            htmlFor={`section-${section}`}
+            className="mb-1.5 block text-xs font-medium text-slate-500"
+          >
+            {section}
+          </label>
 
-                <div>
-                  <label
-                    htmlFor="passing-score"
-                    className="mb-1.5 block text-sm font-medium text-slate-700"
-                  >
-                    Passing Score
-                  </label>
+          <input
+            id={`section-${section}`}
+            type="number"
+            min="0"
+            step="1"
+            value={form[section]}
+            disabled={section === "Writing"}
+            onChange={(event) =>
+              updateForm(
+                section,
+                event.target.value
+              )
+            }
+            className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-400 disabled:bg-slate-50 disabled:text-slate-500"
+          />
+        </div>
+      )
+    )}
+  </div>
+
+  <p className="mt-1.5 text-xs text-slate-400">
+    Writing is fixed at 1 question.
+  </p>
+</div>
+
+               <div>
+  <label
+    className="mb-1.5 block text-sm font-medium text-slate-700"
+  >
+    Total Questions
+  </label>
+
+  <div className="flex h-[42px] items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-700">
+    {Number(form.A1) +
+      Number(form.A2) +
+      Number(form.B1) +
+      Number(form.B2) +
+      Number(form.Writing)}
+  </div>
+
+  <p className="mt-1 text-xs text-slate-400">
+    Automatically calculated from the sections above.
+  </p>
+</div>
+
+<div>
+  <label
+    htmlFor="passing-score"
+    className="mb-1.5 block text-sm font-medium text-slate-700"
+  >
+    Passing Score
+  </label>
 
                   <input
                     id="passing-score"

@@ -23,15 +23,23 @@ const navigation = [
 
 const management = [
   {
+    label: "Tests",
+    href: "/tests",
+    icon: "☷",
+  },
+
+  {
     label: "Test Bank",
     href: "/test-bank",
     icon: "▣",
   },
+
   {
     label: "Campaigns",
     href: "/campaigns",
     icon: "◉",
   },
+
   {
     label: "Anti-Cheating",
     href: "/anti-cheating",
