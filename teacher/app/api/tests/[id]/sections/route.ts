@@ -207,12 +207,11 @@ export async function GET(
       );
     }
 
-    const {
-      data: sections,
-      error: sectionsError,
-    } =
-      await supabase
-        .from("test_sections")
+    let {
+  data: sections,
+  error: sectionsError,
+} = await supabase
+  .from("test_sections")
         .select(
           `
           id,
@@ -327,7 +326,7 @@ export async function PATCH(
     /*
      * Load current sections.
      */
-    const {
+    let {
       data: sections,
       error: sectionsError,
     } =
@@ -364,14 +363,73 @@ export async function PATCH(
     }
 
     if (!sections || sections.length === 0) {
-      return NextResponse.json(
-        {
-          error:
-            "This test has no sections configured.",
-        },
-        { status: 400 }
-      );
-    }
+  const defaultSections = [
+    {
+      test_id: testId,
+      title: "A1",
+      order_number: 1,
+      question_count:
+        sectionUpdates.A1 ?? 0,
+    },
+    {
+      test_id: testId,
+      title: "A2",
+      order_number: 2,
+      question_count:
+        sectionUpdates.A2 ?? 0,
+    },
+    {
+      test_id: testId,
+      title: "B1",
+      order_number: 3,
+      question_count:
+        sectionUpdates.B1 ?? 0,
+    },
+    {
+      test_id: testId,
+      title: "B2",
+      order_number: 4,
+      question_count:
+        sectionUpdates.B2 ?? 0,
+    },
+    {
+      test_id: testId,
+      title: "Writing",
+      order_number: 5,
+      question_count:
+        sectionUpdates.Writing ?? 1,
+    },
+  ];
+
+  const {
+    data: insertedSections,
+    error: insertSectionsError,
+  } = await supabase
+    .from("test_sections")
+    .insert(defaultSections)
+    .select(
+      "id, title, order_number, question_count"
+    );
+
+  if (insertSectionsError) {
+    console.error(
+      "Unable to create test sections:",
+      insertSectionsError
+    );
+
+    return NextResponse.json(
+      {
+        error:
+          "Unable to create test sections.",
+        details:
+          insertSectionsError.message,
+      },
+      { status: 500 }
+    );
+  }
+
+sections = insertedSections ?? [];
+}
 
     /*
      * Validate all provided values.
