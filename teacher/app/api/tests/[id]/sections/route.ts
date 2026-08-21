@@ -504,7 +504,7 @@ sections = insertedSections ?? [];
           count: "exact",
           head: true,
         })
-        .eq("level", level)
+        .eq("cefr_level", level)
         .eq("is_active", true);
 
       if (questionCountError) {
