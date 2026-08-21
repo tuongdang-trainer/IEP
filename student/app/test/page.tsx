@@ -143,8 +143,27 @@ const [saving, setSaving] =
 const [remainingSeconds, setRemainingSeconds] =
   useState<number | null>(null);
 
+const currentQuestionRef = useRef(0);
+
+const writingAnswerRef = useRef("");
+
+const selectedAnswerRef =
+  useRef<string | null>(null);
+
 const autoSubmitRef =
   useRef(false);
+
+useEffect(() => {
+  currentQuestionRef.current = currentQuestion;
+}, [currentQuestion]);
+
+useEffect(() => {
+  writingAnswerRef.current = writingAnswer;
+}, [writingAnswer]);
+
+useEffect(() => {
+  selectedAnswerRef.current = selectedAnswer;
+}, [selectedAnswer]);
 
 /*
  * Keep the current attempt ID in a ref so
@@ -703,16 +722,22 @@ const attemptIdRef =
      */
 
     if (test) {
-      const question =
-        test.questions[currentQuestion];
+  const question =
+    test.questions[currentQuestionRef.current];
 
-      if (question) {
+  if (question) {
         const isWriting =
           question.questionType === "writing";
 
-        const hasAnswer = isWriting
-          ? writingAnswer.trim().length > 0
-          : Boolean(selectedAnswer);
+        const currentWritingAnswer =
+  writingAnswerRef.current;
+
+const currentSelectedAnswer =
+  selectedAnswerRef.current;
+
+const hasAnswer = isWriting
+  ? currentWritingAnswer.trim().length > 0
+  : Boolean(currentSelectedAnswer);
 
         if (hasAnswer) {
           try {
@@ -727,18 +752,18 @@ const attemptIdRef =
                   attemptId:
                     test.attempt.id,
 
-                  attemptQuestionId:
-                    question.attemptQuestionId,
+                 attemptQuestionId:
+  question.attemptQuestionId,
 
-                  selectedOptionId:
-                    isWriting
-                      ? null
-                      : selectedAnswer,
+selectedOptionId:
+  isWriting
+    ? null
+    : currentSelectedAnswer,
 
-                  answerText:
-                    isWriting
-                      ? writingAnswer
-                      : null,
+answerText:
+  isWriting
+    ? currentWritingAnswer
+    : null,
                 }),
                 keepalive: true,
               }
@@ -873,90 +898,6 @@ const attemptIdRef =
     test?.attempt.expiresAt,
     router,
   ]);
-
-  async function saveCurrentAnswerForAutoSubmit() {
-  if (!test) {
-    return true;
-  }
-
-  const question =
-    test.questions[currentQuestion];
-
-  if (!question) {
-    return true;
-  }
-
-  const isWriting =
-    question.questionType === "writing";
-
-  // Nếu chưa trả lời câu hiện tại thì không có gì để lưu.
-  // Hết giờ vẫn phải submit bài.
-  if (
-    isWriting &&
-    !writingAnswer.trim()
-  ) {
-    return true;
-  }
-
-  if (
-    !isWriting &&
-    !selectedAnswer
-  ) {
-    return true;
-  }
-
-  try {
-    const response = await fetch(
-      "/api/candidate/save-answer",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type":
-            "application/json",
-        },
-        body: JSON.stringify({
-          attemptId:
-            test.attempt.id,
-
-          attemptQuestionId:
-            question.attemptQuestionId,
-
-          selectedOptionId:
-            isWriting
-              ? null
-              : selectedAnswer,
-
-          answerText:
-            isWriting
-              ? writingAnswer
-              : null,
-        }),
-        keepalive: true,
-      }
-    );
-
-    const data =
-      await response.json();
-
-    if (!response.ok) {
-      console.error(
-        "Auto-save current answer failed:",
-        data.error
-      );
-
-      return false;
-    }
-
-    return true;
-  } catch (error) {
-    console.error(
-      "Auto-save current answer request error:",
-      error
-    );
-
-    return false;
-  }
-}
 
   async function saveCurrentAnswer() {
     if (!test) {

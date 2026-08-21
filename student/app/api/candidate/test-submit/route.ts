@@ -70,23 +70,37 @@ export async function POST(request: Request) {
     // ---------------------------------------------------------
 
     const isExpired =
-      attempt.expires_at &&
-      new Date(attempt.expires_at).getTime() <=
-        Date.now();
+  attempt.expires_at &&
+  new Date(attempt.expires_at).getTime() <=
+    Date.now();
 
-    /*
-     * If the attempt has expired, it can only be
-     * submitted as an automatic timeout submission.
-     */
-    if (isExpired && !autoSubmit) {
-      return NextResponse.json(
-        {
-          error:
-            "The test time has expired. The test must be submitted automatically.",
-        },
-        { status: 409 }
-      );
-    }
+/*
+ * Automatic submission is only valid after
+ * the server confirms that the attempt has expired.
+ */
+if (autoSubmit && !isExpired) {
+  return NextResponse.json(
+    {
+      error:
+        "The test time has not expired yet.",
+    },
+    { status: 409 }
+  );
+}
+
+/*
+ * If the attempt has expired, it must be
+ * submitted as an automatic timeout submission.
+ */
+if (isExpired && !autoSubmit) {
+  return NextResponse.json(
+    {
+      error:
+        "The test time has expired. The test must be submitted automatically.",
+    },
+    { status: 409 }
+  );
+}
 
     // ---------------------------------------------------------
     // 3. Get all attempt questions
@@ -336,133 +350,68 @@ if (!autoSubmit) {
     }
 
     // ---------------------------------------------------------
-    // 7. Save Writing response
-    // ---------------------------------------------------------
+// 7. Verify Writing response
+// ---------------------------------------------------------
 
-    const writingQuestion =
-      attemptQuestions.find(
-        (question) =>
-          question.writing_task_id
-      );
+const writingQuestion = attemptQuestions.find(
+  (question) => question.writing_task_id
+);
 
-    if (writingQuestion) {
-      const writingAnswer =
-        answerMap.get(
-          writingQuestion.id
-        );
+if (writingQuestion) {
+  const {
+    data: writingResponse,
+    error: writingResponseError,
+  } = await supabaseAdmin
+    .from("writing_responses")
+    .select(`
+      id,
+      attempt_id,
+      writing_task_id,
+      response_text,
+      word_count,
+      submitted_at,
+      score,
+      max_score,
+      feedback,
+      grading_status
+    `)
+    .eq("attempt_id", attemptId)
+    .maybeSingle();
 
-      if (
-        writingAnswer &&
-        writingAnswer.answer_text?.trim()
-      ) {
-        const responseText =
-          writingAnswer.answer_text.trim();
+  if (writingResponseError) {
+    console.error(
+      "Writing response lookup error:",
+      writingResponseError
+    );
 
-        const wordCount =
-          responseText
-            .split(/\s+/)
-            .filter(Boolean)
-            .length;
+    return NextResponse.json(
+      {
+        error: "Unable to load writing response.",
+      },
+      { status: 500 }
+    );
+  }
 
-        const now =
-          new Date().toISOString();
-
-        const {
-          data:
-            existingWritingResponse,
-        } = await supabaseAdmin
-          .from("writing_responses")
-          .select("id")
-          .eq(
-            "attempt_id",
-            attemptId
-          )
-          .maybeSingle();
-
-        if (
-          existingWritingResponse
-        ) {
-          const {
-            error:
-              writingUpdateError,
-          } = await supabaseAdmin
-            .from(
-              "writing_responses"
-            )
-            .update({
-              writing_task_id:
-                writingQuestion.writing_task_id,
-              response_text:
-                responseText,
-              word_count:
-                wordCount,
-              submitted_at: now,
-              grading_status:
-                "pending",
-              updated_at: now,
-            })
-            .eq(
-              "id",
-              existingWritingResponse.id
-            );
-
-          if (
-            writingUpdateError
-          ) {
-            console.error(
-              "Writing response update error:",
-              writingUpdateError
-            );
-
-            return NextResponse.json(
-              {
-                error:
-                  "Unable to save writing response.",
-              },
-              { status: 500 }
-            );
-          }
-        } else {
-          const {
-            error:
-              writingInsertError,
-          } = await supabaseAdmin
-            .from(
-              "writing_responses"
-            )
-            .insert({
-              attempt_id:
-                attemptId,
-              writing_task_id:
-                writingQuestion.writing_task_id,
-              response_text:
-                responseText,
-              word_count:
-                wordCount,
-              submitted_at: now,
-              grading_status:
-                "pending",
-            });
-
-          if (
-            writingInsertError
-          ) {
-            console.error(
-              "Writing response insert error:",
-              writingInsertError
-            );
-
-            return NextResponse.json(
-              {
-                error:
-                  "Unable to save writing response.",
-              },
-              { status: 500 }
-            );
-          }
-        }
-      }
-    }
+  /*
+   * Normal submission requires Writing to be answered.
+   *
+   * Auto-submit is allowed to finish even when Writing
+   * was left unanswered.
+   */
+  if (
+    !autoSubmit &&
+    (!writingResponse ||
+      !writingResponse.response_text?.trim())
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "Please answer the writing question before submitting the test.",
+      },
+      { status: 400 }
+    );
+  }
+}
 
     // ---------------------------------------------------------
     // 8. Calculate final MCQ result

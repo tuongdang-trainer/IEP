@@ -162,8 +162,157 @@ export async function POST(request: Request) {
       }
     }
 
+        // ---------------------------------------------------------
+    // 5. Save Writing response
     // ---------------------------------------------------------
-    // 5. Check existing answer
+
+    if (attemptQuestion.writing_task_id) {
+      const responseText = answerText!.trim();
+
+      const wordCount = responseText
+        .split(/\s+/)
+        .filter(Boolean)
+        .length;
+
+      const now = new Date().toISOString();
+
+      const {
+        data: existingWritingResponse,
+        error: existingWritingError,
+      } = await supabaseAdmin
+        .from("writing_responses")
+        .select("id")
+        .eq("attempt_id", attemptId)
+        .maybeSingle();
+
+      if (existingWritingError) {
+        console.error(
+          "Writing response lookup error:",
+          existingWritingError
+        );
+
+        return NextResponse.json(
+          {
+            error: "Unable to check writing response.",
+          },
+          { status: 500 }
+        );
+      }
+
+      // Update existing Writing response
+      if (existingWritingResponse) {
+        const {
+          data: updatedWritingResponse,
+          error: updateWritingError,
+        } = await supabaseAdmin
+          .from("writing_responses")
+          .update({
+            writing_task_id:
+              attemptQuestion.writing_task_id,
+            response_text: responseText,
+            word_count: wordCount,
+            submitted_at: now,
+            grading_status: "pending",
+            updated_at: now,
+          })
+          .eq("id", existingWritingResponse.id)
+          .select(`
+            id,
+            attempt_id,
+            writing_task_id,
+            response_text,
+            word_count,
+            submitted_at,
+            score,
+            max_score,
+            feedback,
+            grading_status
+          `)
+          .single();
+
+        if (
+          updateWritingError ||
+          !updatedWritingResponse
+        ) {
+          console.error(
+            "Writing response update error:",
+            updateWritingError
+          );
+
+          return NextResponse.json(
+            {
+              error:
+                "Unable to save writing response.",
+            },
+            { status: 500 }
+          );
+        }
+
+        return NextResponse.json({
+          success: true,
+          mode: "updated",
+          type: "writing",
+          response: updatedWritingResponse,
+        });
+      }
+
+      // Create new Writing response
+      const {
+        data: newWritingResponse,
+        error: insertWritingError,
+      } = await supabaseAdmin
+        .from("writing_responses")
+        .insert({
+          attempt_id: attemptId,
+          writing_task_id:
+            attemptQuestion.writing_task_id,
+          response_text: responseText,
+          word_count: wordCount,
+          submitted_at: now,
+          grading_status: "pending",
+        })
+        .select(`
+          id,
+          attempt_id,
+          writing_task_id,
+          response_text,
+          word_count,
+          submitted_at,
+          score,
+          max_score,
+          feedback,
+          grading_status
+        `)
+        .single();
+
+      if (
+        insertWritingError ||
+        !newWritingResponse
+      ) {
+        console.error(
+          "Writing response insert error:",
+          insertWritingError
+        );
+
+        return NextResponse.json(
+          {
+            error:
+              "Unable to save writing response.",
+          },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        mode: "created",
+        type: "writing",
+        response: newWritingResponse,
+      });
+    }
+
+    // ---------------------------------------------------------
+    // 6. Check existing MCQ answer
     // ---------------------------------------------------------
 
     const { data: existingAnswer, error: existingAnswerError } =
